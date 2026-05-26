@@ -15,6 +15,8 @@ def create_app(
     suggestions_enabled: bool = True,
     dangerous_mutations: list[str] | None = None,
     cors_misconfigured: bool = True,
+    accept_form_post: bool = False,
+    accept_get_query: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -24,6 +26,8 @@ def create_app(
         "suggestions_enabled": suggestions_enabled,
         "dangerous_mutations": dangerous_mutations or [],
         "cors_misconfigured": cors_misconfigured,
+        "accept_form_post": accept_form_post,
+        "accept_get_query": accept_get_query,
     }
 
     def _add_cors(response: JSONResponse) -> JSONResponse:
@@ -103,12 +107,53 @@ def create_app(
 
     @app.get("/graphql")
     async def graphql_get(request: Request) -> JSONResponse:
+        query = request.query_params.get("query", "")
+        is_mutation = query.lstrip().startswith("mutation")
+        if is_mutation and not cfg["accept_get_query"]:
+            # Reject mutations over GET (CSRF-safe behavior).
+            response = JSONResponse(
+                status_code=405,
+                content={
+                    "errors": [
+                        {"message": "GET requests may not perform mutations."}
+                    ]
+                },
+            )
+            _add_cors(response)
+            return response
         response = JSONResponse(content={"data": {"__typename": "Query"}})
         _add_cors(response)
         return response
 
     @app.post("/graphql")
     async def graphql_post(request: Request) -> JSONResponse:
+        content_type = request.headers.get("content-type", "")
+        is_form = "application/x-www-form-urlencoded" in content_type
+
+        if is_form:
+            if not cfg["accept_form_post"]:
+                # Reject non-JSON content types (CSRF-safe behavior).
+                response = JSONResponse(
+                    status_code=400,
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    "This operation requires "
+                                    "Content-Type: application/json."
+                                )
+                            }
+                        ]
+                    },
+                )
+                _add_cors(response)
+                return response
+            form = await request.form()
+            query = form.get("query", "")
+            response = JSONResponse(content={"data": {"__typename": "Mutation"}})
+            _add_cors(response)
+            return response
+
         try:
             body = await request.json()
         except Exception:

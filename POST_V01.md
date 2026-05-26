@@ -31,7 +31,9 @@ Research base: portswigger.net/web-security/graphql, HackerOne disclosure corpus
 
 ---
 
-### 1. CSRF via content-type bypass
+### 1. CSRF via content-type bypass ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 2). Check `csrf` (`src/enshroud/checks/csrf.py`), category `csrf_via_content_type`, included in `--checks all`. Detects mutations executable via `application/x-www-form-urlencoded` POST and via GET; falls back to a synthetic `__typename` probe mutation when introspection is disabled.
 
 **Severity:** HIGH  
 **Effort:** S (small — 1-2 days)  
@@ -227,7 +229,7 @@ Clairvoyance is the canonical tool. It is Python-based and async but requires a 
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
 |---|---|---|---|---|---|
-| 1 | `csrf` | `--checks csrf` | HIGH | S | Yes |
+| 1 | `csrf` ✅ | `--checks csrf` | HIGH | S | Yes (shipped) |
 | 2 | `fingerprint` | `--checks fingerprint` | INFO | M | Yes |
 | 3 | `websocket` | `--checks websocket` | HIGH | L | No (opt-in) |
 | 4 | `injection` | `--checks injection` | CRITICAL | M | No (opt-in, active) |

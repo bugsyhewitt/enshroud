@@ -78,3 +78,52 @@ class GraphQLClient:
                 content=json.dumps(payload),
             )
             return resp
+
+    async def post_form(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Send a query as application/x-www-form-urlencoded POST.
+
+        Browsers can issue this content type without a CORS preflight, so a
+        server that accepts mutations here is exposed to cross-site request
+        forgery. Returns the raw httpx Response.
+        """
+        headers = dict(self.headers)
+        # Override the JSON content type; httpx sets the form one from `data`.
+        headers.pop("Content-Type", None)
+        data: dict[str, str] = {"query": query}
+        if variables:
+            data["variables"] = json.dumps(variables)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                self.endpoint,
+                headers=headers,
+                data=data,
+            )
+            return resp
+
+    async def get_query(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Send a query via GET with the query string in the URL.
+
+        GET requests are simple requests that bypass CORS preflight entirely.
+        A server that executes mutations over GET is exposed to CSRF via
+        `<img>` / `<script>` / link prefetch. Returns the raw httpx Response.
+        """
+        headers = dict(self.headers)
+        headers.pop("Content-Type", None)
+        params: dict[str, str] = {"query": query}
+        if variables:
+            params["variables"] = json.dumps(variables)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                self.endpoint,
+                headers=headers,
+                params=params,
+            )
+            return resp

@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, and CORS misconfiguration.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, and CSRF via content-type bypass.
 
 ## Ethical Use
 
@@ -57,7 +57,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 field-oracle, mutation-enum, cors, all
+                                 field-oracle, mutation-enum, cors, csrf, all
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
@@ -138,6 +138,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
+| `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
 
 ## Attribution
 
