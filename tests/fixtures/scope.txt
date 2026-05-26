@@ -1,0 +1,3 @@
+# Test scope file — contains 127.0.0.1 so local tests are in-scope
+127.0.0.1
+localhost
