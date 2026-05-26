@@ -1,0 +1,158 @@
+"""CLI entry point for enshroud."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from typing import Any
+
+from enshroud.client import GraphQLClient
+from enshroud.output import render_h1md, render_json
+from enshroud.scope import get_target_host, load_scope, target_in_scope
+
+ALL_CHECKS = [
+    "introspection",
+    "depth-dos",
+    "alias-batch",
+    "field-oracle",
+    "mutation-enum",
+    "cors",
+]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="enshroud",
+        description="Modern GraphQL attack-surface scanner for bug bounty and penetration testing.",
+    )
+    parser.add_argument(
+        "--target",
+        required=True,
+        metavar="URL",
+        help="GraphQL endpoint URL (required)",
+    )
+    parser.add_argument(
+        "--scope-file",
+        required=True,
+        metavar="FILE",
+        help="Path to scope file (one hostname/IP/CIDR per line, # comments ignored)",
+    )
+    parser.add_argument(
+        "--checks",
+        default="all",
+        metavar="CHECK",
+        help=(
+            "Comma-separated checks to run (default: all). "
+            "Choices: introspection, depth-dos, alias-batch, field-oracle, "
+            "mutation-enum, cors, all"
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=["json", "h1md"],
+        default="json",
+        help="Output format (default: json)",
+    )
+    parser.add_argument(
+        "--auth-header",
+        metavar="HEADER",
+        default=None,
+        help='Optional auth header, e.g. "Authorization: Bearer TOKEN"',
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=10,
+        metavar="SECONDS",
+        help="Request timeout in seconds (default: 10)",
+    )
+    return parser
+
+
+def parse_checks(checks_str: str) -> list[str]:
+    """Parse the --checks argument into a list of check names."""
+    raw = [c.strip() for c in checks_str.replace(",", " ").split()]
+    if "all" in raw:
+        return list(ALL_CHECKS)
+    result: list[str] = []
+    for c in raw:
+        if c not in ALL_CHECKS:
+            print(
+                f"Warning: unknown check '{c}'. Valid choices: {', '.join(ALL_CHECKS)}, all",
+                file=sys.stderr,
+            )
+        else:
+            result.append(c)
+    return result
+
+
+async def run_checks(
+    checks: list[str],
+    client: GraphQLClient,
+) -> list[dict[str, Any]]:
+    """Run selected checks and aggregate findings."""
+    from enshroud.checks import (
+        alias_batch,
+        cors,
+        depth_dos,
+        field_oracle,
+        introspection,
+        mutation_enum,
+    )
+
+    check_map = {
+        "introspection": introspection.check,
+        "depth-dos": depth_dos.check,
+        "alias-batch": alias_batch.check,
+        "field-oracle": field_oracle.check,
+        "mutation-enum": mutation_enum.check,
+        "cors": cors.check,
+    }
+
+    findings: list[dict[str, Any]] = []
+    for check_name in checks:
+        fn = check_map.get(check_name)
+        if fn:
+            result = await fn(client)
+            findings.extend(result)
+
+    return findings
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # Load scope and validate target
+    try:
+        scope_entries = load_scope(args.scope_file)
+    except FileNotFoundError:
+        print(f"Error: scope file not found: {args.scope_file}", file=sys.stderr)
+        sys.exit(1)
+
+    if not target_in_scope(args.target, scope_entries):
+        host = get_target_host(args.target)
+        print(f"Error: target {host} is out of scope", file=sys.stderr)
+        sys.exit(2)
+
+    checks = parse_checks(args.checks)
+    if not checks:
+        print("Error: no valid checks specified", file=sys.stderr)
+        sys.exit(1)
+
+    client = GraphQLClient(
+        endpoint=args.target,
+        auth_header=args.auth_header,
+        timeout=args.timeout,
+    )
+
+    findings = asyncio.run(run_checks(checks, client))
+
+    if args.format == "h1md":
+        print(render_h1md(findings))
+    else:
+        print(render_json(findings))
+
+
+if __name__ == "__main__":
+    main()
