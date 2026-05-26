@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enshroud"
+version = "0.1.0"
+description = "Modern GraphQL attack-surface scanner for bug bounty and penetration testing"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27",
+    "graphql-core>=3.2",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "anyio>=4.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+enshroud = "enshroud.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

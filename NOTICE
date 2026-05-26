@@ -1,0 +1,7 @@
+enshroud — Modern GraphQL Attack Surface Scanner
+Copyright (c) 2026 Bugsy Hewitt
+
+This tool was inspired by GraphQLmap (https://github.com/swisskyrepo/GraphQLmap)
+by Swissky (swisskyrepo), which provided the original concept of GraphQL parameter
+injection scanning via CLI. GraphQLmap is MIT-licensed. enshroud is an independent
+rewrite with expanded scope and modern tooling — no source code was copied.
