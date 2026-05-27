@@ -1,0 +1,173 @@
+{
+  "schema_version": "1",
+  "description": "GraphQL engine fingerprint signatures. Patterns are matched (case-insensitively) against the concatenated text of all probe responses (status line, headers, and body). The first engine whose required patterns all match wins; ties are broken by declaration order (most specific engines listed first). Derived from graphw00f (dolevf) and the GraphQL Threat Matrix (nicholasess).",
+  "engines": [
+    {
+      "name": "hasura",
+      "display_name": "Hasura GraphQL Engine",
+      "match": {
+        "any": [
+          "x-hasura-",
+          "not a valid graphql query",
+          "field \"__typename\" not found in type",
+          "hasura"
+        ],
+        "all": []
+      },
+      "headers": ["x-hasura-"],
+      "known_default_insecure_behaviors": [
+        "Exposes full Postgres schema via introspection unless permissions are explicitly restricted per role",
+        "Anonymous role, if enabled, can leak schema and data without authentication",
+        "Admin secret leakage grants full database access"
+      ]
+    },
+    {
+      "name": "wpgraphql",
+      "display_name": "WPGraphQL (WordPress)",
+      "match": {
+        "any": [
+          "wpgraphql",
+          "internal server error.*wp",
+          "graphql_error"
+        ],
+        "all": []
+      },
+      "headers": ["x-graphql-keys", "x-wpgraphql"],
+      "known_default_insecure_behaviors": [
+        "Exposes WordPress object types including the users connection by default, enabling user enumeration",
+        "Public schema introspection enabled by default in many installs",
+        "Plugin/theme versions may be inferable from exposed types"
+      ]
+    },
+    {
+      "name": "apollo",
+      "display_name": "Apollo Server",
+      "match": {
+        "any": [
+          "syntax error: expected name, found",
+          "cannot query field",
+          "graphql_parse_failed",
+          "graphql_validation_failed",
+          "apollo-server",
+          "must provide query string"
+        ],
+        "all": []
+      },
+      "headers": ["apollo"],
+      "known_default_insecure_behaviors": [
+        "Introspection disabled in production (NODE_ENV=production) since v3, but frequently re-enabled by operators",
+        "Field suggestions ('Did you mean') enabled by default, leaking schema even when introspection is off",
+        "APQ (automatic persisted queries) may allow unauthenticated cache population",
+        "CSRF prevention is opt-in (csrfPrevention) and off in older configurations"
+      ]
+    },
+    {
+      "name": "graphene",
+      "display_name": "Graphene (Python)",
+      "match": {
+        "any": [
+          "syntax error graphql request",
+          "cannot query field .* on type",
+          "graphene",
+          "django.*graphql"
+        ],
+        "all": []
+      },
+      "headers": [],
+      "known_default_insecure_behaviors": [
+        "Introspection enabled by default, not gated on environment",
+        "Field suggestions enabled by default, leaking schema names",
+        "No built-in query depth or complexity limiting"
+      ]
+    },
+    {
+      "name": "strawberry",
+      "display_name": "Strawberry (Python)",
+      "match": {
+        "any": [
+          "strawberry",
+          "unexpected token at",
+          "syntax error while parsing"
+        ],
+        "all": []
+      },
+      "headers": [],
+      "known_default_insecure_behaviors": [
+        "Introspection and GraphiQL enabled by default in the development server",
+        "No default query depth or complexity limiting"
+      ]
+    },
+    {
+      "name": "yoga",
+      "display_name": "GraphQL Yoga / Hive",
+      "match": {
+        "any": [
+          "graphql-yoga",
+          "yoga",
+          "unable to parse request body as json"
+        ],
+        "all": []
+      },
+      "headers": ["graphql-yoga"],
+      "known_default_insecure_behaviors": [
+        "GraphiQL enabled by default; introspection enabled by default",
+        "Field suggestions enabled by default via graphql-js",
+        "APQ supported via plugin and may be unprotected"
+      ]
+    },
+    {
+      "name": "mercurius",
+      "display_name": "Mercurius (Fastify)",
+      "match": {
+        "any": [
+          "mercurius",
+          "unknown query",
+          "fastify"
+        ],
+        "all": []
+      },
+      "headers": [],
+      "known_default_insecure_behaviors": [
+        "Introspection enabled by default",
+        "GraphiQL/JIT may expose schema details",
+        "No default depth limiting (queryDepth plugin is opt-in)"
+      ]
+    },
+    {
+      "name": "graphql-ruby",
+      "display_name": "graphql-ruby",
+      "match": {
+        "any": [
+          "graphql-ruby",
+          "field '__typename' doesn't exist on type",
+          "no query string was present"
+        ],
+        "all": []
+      },
+      "headers": [],
+      "known_default_insecure_behaviors": [
+        "Introspection enabled by default unless disable_introspection_entry_points is set",
+        "Field suggestions ('Did you mean') enabled by default",
+        "Max depth/complexity limits are opt-in"
+      ]
+    },
+    {
+      "name": "graphql-js",
+      "display_name": "graphql-js (reference implementation)",
+      "match": {
+        "any": [
+          "syntax error: expected name, found \"}\"",
+          "cannot query field \"[^\"]+\" on type",
+          "did you mean"
+        ],
+        "all": []
+      },
+      "headers": [],
+      "known_default_insecure_behaviors": [
+        "Introspection enabled by default",
+        "Field suggestions ('Did you mean') enabled by default, leaking schema even when introspection is disabled",
+        "No default query depth or complexity limiting"
+      ]
+    }
+  ]
+}

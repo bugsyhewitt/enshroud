@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, and CSRF via content-type bypass.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, and GraphQL engine fingerprinting.
 
 ## Ethical Use
 
@@ -57,7 +57,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 field-oracle, mutation-enum, cors, csrf, all
+                                 field-oracle, mutation-enum, cors, csrf,
+                                 fingerprint, all
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
@@ -139,6 +140,22 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
+| `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
+
+### Engine fingerprinting
+
+The `fingerprint` check sends a small set of malformed and edge-case probe
+queries and matches the resulting error messages, response shape, and headers
+against a bundled signature set (`src/enshroud/data/signatures.json`, derived
+from [graphw00f](https://github.com/dolevf/graphw00f) and the
+[GraphQL Threat Matrix](https://github.com/nicholasess/graphql-threat-matrix)).
+
+When an engine is identified, the INFO finding lists that engine's known
+default-insecure behaviours — for example, Hasura exposing the full Postgres
+schema via introspection unless restricted, WPGraphQL exposing the WordPress
+`users` connection, or Apollo's opt-in CSRF prevention — so you can skip generic
+probing and go straight to engine-specific misconfigurations and CVEs. The probe
+queries are side-effect free (no mutations are sent).
 
 ## Attribution
 

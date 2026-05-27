@@ -17,6 +17,7 @@ def create_app(
     cors_misconfigured: bool = True,
     accept_form_post: bool = False,
     accept_get_query: bool = False,
+    engine: str | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -28,7 +29,40 @@ def create_app(
         "cors_misconfigured": cors_misconfigured,
         "accept_form_post": accept_form_post,
         "accept_get_query": accept_get_query,
+        "engine": engine,
     }
+
+    # Engine-specific error wording / headers used by the fingerprint probes.
+    # Keyed by the engine name from src/enshroud/data/signatures.json.
+    engine_profiles: dict[str, dict[str, Any]] = {
+        "apollo": {
+            "headers": {},
+            "error": 'Syntax Error: Expected Name, found "}".',
+            "extensions": {"code": "GRAPHQL_PARSE_FAILED"},
+        },
+        "hasura": {
+            "headers": {"x-hasura-role": "anonymous"},
+            "error": "not a valid graphql query",
+            "extensions": {},
+        },
+        "graphene": {
+            "headers": {},
+            "error": "Syntax Error GraphQL request (1:9) Expected Name, found }",
+            "extensions": {},
+        },
+        "wpgraphql": {
+            "headers": {"x-graphql-keys": "skipped"},
+            "error": "Internal server error processing the WPGraphQL request",
+            "extensions": {"category": "graphql_error"},
+        },
+    }
+
+    def _engine_headers(response: JSONResponse) -> JSONResponse:
+        profile = engine_profiles.get(cfg["engine"] or "")
+        if profile:
+            for k, v in profile.get("headers", {}).items():
+                response.headers[k] = v
+        return response
 
     def _add_cors(response: JSONResponse) -> JSONResponse:
         if cfg["cors_misconfigured"]:
@@ -248,6 +282,25 @@ def create_app(
             data = {alias: "Query" for alias in alias_matches}
             response = JSONResponse(content={"data": data})
             _add_cors(response)
+            return response
+
+        # Fingerprint probes: malformed selection sets / non-existent fields /
+        # unknown directives. When an engine profile is configured, return that
+        # engine's distinctive error wording so the fingerprint check can match.
+        profile = engine_profiles.get(cfg["engine"] or "")
+        looks_malformed = (
+            "enshroudFingerprintProbe" in query
+            or "@enshroudProbe" in query
+            or bool(re.match(r"\s*query\s*\{\s*\}\s*$", query))
+            or "@skip" in query
+        )
+        if profile is not None and looks_malformed:
+            err: dict[str, Any] = {"message": profile["error"]}
+            if profile.get("extensions"):
+                err["extensions"] = profile["extensions"]
+            response = JSONResponse(status_code=200, content={"errors": [err]})
+            _add_cors(response)
+            _engine_headers(response)
             return response
 
         # Default response
