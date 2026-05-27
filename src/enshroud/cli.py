@@ -19,6 +19,7 @@ ALL_CHECKS = [
     "cors",
     "csrf",
     "fingerprint",
+    "apq",
 ]
 
 
@@ -46,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, field-oracle, "
-            "mutation-enum, cors, csrf, fingerprint, all"
+            "mutation-enum, cors, csrf, fingerprint, apq, all"
         ),
     )
     parser.add_argument(
@@ -95,6 +96,7 @@ async def run_checks(
     """Run selected checks and aggregate findings."""
     from enshroud.checks import (
         alias_batch,
+        apq,
         cors,
         csrf,
         depth_dos,
@@ -113,6 +115,7 @@ async def run_checks(
         "cors": cors.check,
         "csrf": csrf.check,
         "fingerprint": fingerprint.check,
+        "apq": apq.check,
     }
 
     findings: list[dict[str, Any]] = []

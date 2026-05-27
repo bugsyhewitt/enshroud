@@ -18,6 +18,9 @@ def create_app(
     accept_form_post: bool = False,
     accept_get_query: bool = False,
     engine: str | None = None,
+    apq_enabled: bool = False,
+    apq_require_auth: bool = False,
+    apq_rate_limit: int | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -30,7 +33,14 @@ def create_app(
         "accept_form_post": accept_form_post,
         "accept_get_query": accept_get_query,
         "engine": engine,
+        "apq_enabled": apq_enabled,
+        "apq_require_auth": apq_require_auth,
+        "apq_rate_limit": apq_rate_limit,
     }
+    # APQ state: hash → query string
+    apq_cache: dict[str, str] = {}
+    # Per-IP registration counts (keyed by client host)
+    apq_reg_counts: dict[str, int] = {}
 
     # Engine-specific error wording / headers used by the fingerprint probes.
     # Keyed by the engine name from src/enshroud/data/signatures.json.
@@ -195,6 +205,60 @@ def create_app(
                 status_code=400,
                 content={"errors": [{"message": "Invalid JSON"}]},
             )
+
+        # ── APQ handling ────────────────────────────────────────────────────
+        extensions = body.get("extensions") or {}
+        pq = extensions.get("persistedQuery")
+        if pq is not None and cfg["apq_enabled"]:
+            client_hash: str = pq.get("sha256Hash", "")
+            incoming_query: str | None = body.get("query")
+
+            if incoming_query is None:
+                # Hash-only lookup
+                if client_hash in apq_cache:
+                    # Serve from cache
+                    response = JSONResponse(content={"data": {"__typename": "Query"}})
+                    _add_cors(response)
+                    return response
+                else:
+                    response = JSONResponse(
+                        content={
+                            "errors": [
+                                {
+                                    "message": "PersistedQueryNotFound",
+                                    "extensions": {"code": "PersistedQueryNotFound"},
+                                }
+                            ]
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+            else:
+                # Registration request
+                if cfg["apq_require_auth"]:
+                    auth = request.headers.get("authorization", "")
+                    if not auth:
+                        response = JSONResponse(
+                            status_code=401,
+                            content={"errors": [{"message": "Unauthorized"}]},
+                        )
+                        return response
+
+                client_ip = request.client.host if request.client else "unknown"
+                if cfg["apq_rate_limit"] is not None:
+                    count = apq_reg_counts.get(client_ip, 0)
+                    if count >= cfg["apq_rate_limit"]:
+                        response = JSONResponse(
+                            status_code=429,
+                            content={"errors": [{"message": "Too Many Requests"}]},
+                        )
+                        return response
+                    apq_reg_counts[client_ip] = count + 1
+
+                apq_cache[client_hash] = incoming_query
+                response = JSONResponse(content={"data": {"__typename": "Query"}})
+                _add_cors(response)
+                return response
 
         query: str = body.get("query", "")
 
