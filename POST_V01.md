@@ -94,7 +94,9 @@ graphw00f covers fingerprinting well as a standalone tool, but it is a separate 
 
 ---
 
-### 3. WebSocket subscription attack surface
+### 3. WebSocket subscription attack surface ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 7). Opt-in check `websocket` (`src/enshroud/checks/websocket.py`), **excluded from `--checks all`** (requires a WebSocket round-trip; many endpoints serve no subscriptions). Derives the `ws://`/`wss://` URL from the target, negotiates both `graphql-transport-ws` and legacy `graphql-ws` subprotocols, and runs four sub-checks: `websocket_unauth_subscription` (HIGH — unauthenticated `connection_init` acked), `websocket_introspection` (MEDIUM — operations execute over WS), `websocket_no_tls` (MEDIUM — plaintext `ws://` accepted), `websocket_cswsh` (HIGH — cross-origin handshake accepted). WebSocket support uses the optional `websockets` dependency (`pip install enshroud[ws]`); the check degrades to no-findings when it is absent.
 
 **Severity:** HIGH (BFLA/BOLA via unauthenticated subscription) to LOW (info disclosure)  
 **Effort:** L (large — WebSocket protocol + graphql-ws handshake)  
@@ -233,7 +235,7 @@ Clairvoyance is the canonical tool. It is Python-based and async but requires a 
 |---|---|---|---|---|---|
 | 1 | `csrf` ✅ | `--checks csrf` | HIGH | S | Yes (shipped) |
 | 2 | `fingerprint` | `--checks fingerprint` | INFO | M | Yes |
-| 3 | `websocket` | `--checks websocket` | HIGH | L | No (opt-in) |
+| 3 | `websocket` ✅ | `--checks websocket` | HIGH | L | No (opt-in, shipped) |
 | 4 | `injection` | `--checks injection` | CRITICAL | M | No (opt-in, active) |
 | 5 | `apq` | `--checks apq` | MEDIUM | S | Yes |
 | 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
