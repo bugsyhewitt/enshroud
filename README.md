@@ -66,8 +66,9 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 batch-array, field-oracle, mutation-enum, cors,
-                                 csrf, cookie-posture, fingerprint, apq, all
+                                 batch-array, field-dup, field-oracle,
+                                 mutation-enum, cors, csrf, cookie-posture,
+                                 fingerprint, apq, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -187,6 +188,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
+| `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
@@ -228,6 +230,41 @@ To remediate, disable transport-level batching unless required (Apollo Server:
 `allowBatchedHttpRequests: false`), or cap the batch size and rate-limit per
 operation rather than per request — and never expose authentication mutations to
 batched execution.
+
+### Field / fragment duplication
+
+The `field-dup` check probes the third denial-of-service axis. Where `depth-dos`
+tests query *nesting* and `alias-batch` tests *breadth* via distinct aliases,
+`field-dup` tests **repetition** — whether the server collapses repeated
+identical fields and repeated fragment spreads, or expands the work
+super-linearly.
+
+It sends two read-only probes, both built only from `__typename` (no schema
+knowledge required):
+
+1. **Repeated fields** — `{ __typename __typename ... }` with the same selection
+   repeated 500 times.
+2. **Repeated fragment spread** — one fragment containing a single `__typename`,
+   spread 500 times: `{ ...F ...F ... } fragment F on Query { __typename }`. This
+   is the building block of the circular-fragment attacks that crash executors
+   that do not enforce a fragment-expansion limit.
+
+A finding fires (**MEDIUM**) only when the server accepts a probe *without*
+returning a complexity / fragment / limit error, which is the signal that
+repetition is uncapped. Nothing is mutated — every selection is the `__typename`
+meta-field — so the check is part of the default `--checks all`. The `evidence`
+field lists which vectors (`repeated_fields`, `repeated_fragment_spread`) the
+server accepted.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks field-dup
+```
+
+To remediate, enforce a query-complexity / cost limit that counts repeated
+selections and fragment spreads, and cap the number of fragment spreads per
+operation, rejecting operations whose computed cost exceeds a fixed budget before
+execution.
 
 ### Cookie posture
 
