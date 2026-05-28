@@ -31,6 +31,7 @@ def test_smoke_all_checks_json(mock_url, scope_file):
     assert "depth_dos" in categories
     assert "alias_batching" in categories
     assert "array_batching" in categories
+    assert "directive_abuse" in categories
     assert "field_suggestion_oracle" in categories
     assert "dangerous_mutation_exposed" in categories
     assert "cors_misconfiguration" in categories

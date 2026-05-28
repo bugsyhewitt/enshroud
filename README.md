@@ -66,9 +66,9 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 batch-array, field-dup, field-oracle,
-                                 mutation-enum, cors, csrf, cookie-posture,
-                                 fingerprint, apq, all
+                                 batch-array, field-dup, directive-abuse,
+                                 field-oracle, mutation-enum, cors, csrf,
+                                 cookie-posture, fingerprint, apq, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -189,6 +189,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
+| `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
@@ -265,6 +266,48 @@ To remediate, enforce a query-complexity / cost limit that counts repeated
 selections and fragment spreads, and cap the number of fragment spreads per
 operation, rejecting operations whose computed cost exceeds a fixed budget before
 execution.
+
+### Directive overloading / unknown directives
+
+The `directive-abuse` check probes the *directive* layer — a fourth axis beyond
+the three denial-of-service checks (`depth-dos` = nesting, `alias-batch` =
+breadth, `field-dup` = repetition). It is both a DoS amplifier and a recon probe.
+
+It sends two read-only probes, both anchored on `__typename` (no schema
+knowledge required):
+
+1. **Directive overloading** — the built-in, non-repeatable `@skip` directive
+   stacked 500 times on a single field:
+   `{ __typename @skip(if: false) @skip(if: false) ... }`. The GraphQL spec
+   forbids repeating a non-repeatable directive at one location, so a validating
+   executor rejects this. A server that accepts it has weak or skipped directive
+   validation and must parse/process every occurrence — a cheap super-linear
+   amplification vector.
+2. **Unknown-directive recon** — `{ __typename @enshroudUnknownDirective }`. A
+   spec-compliant server rejects an undefined directive with "Unknown
+   directive ..."; a permissive one accepts it. The rejection error is also
+   mined for a "Did you mean `@X`" hint, which can **leak the names of internal
+   custom directives** (e.g. `@auth`, `@cost`, `@cacheControl`, `@stream`) that
+   reveal the server's auth/caching/cost tooling.
+
+A finding fires (**MEDIUM**) when the server accepts either probe *without* a
+directive / complexity / validation error, **or** when a rejection leaks a real
+custom-directive name. The `accepted_vectors` field lists which vectors
+(`directive_overloading`, `unknown_directive_accepted`) the server accepted, and
+`leaked_directives` carries any directive names recovered via suggestions.
+Nothing is mutated — every selection is the `__typename` meta-field — so the
+check is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks directive-abuse
+```
+
+To remediate, enable strict query validation so non-repeatable directives are
+rejected when repeated and unknown directives are rejected outright, ensure
+directive processing happens after validation, disable directive/field
+suggestion hints in production, and count directive occurrences toward the query
+complexity budget.
 
 ### Cookie posture
 

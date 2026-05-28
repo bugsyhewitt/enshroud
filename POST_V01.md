@@ -307,9 +307,23 @@ super-linearly. Complements `depth-dos` (depth) and `alias-batch` (breadth) with
 the third DoS axis: repetition. Probe `{ a a a ... }` and a self-referential
 fragment, measure whether the server caps or expands the work.
 
-### 9. Directive-overloading / `@skip`/`@include` abuse (candidate)
+### 9. Directive-overloading / `@skip`/`@include` abuse ✅ IMPLEMENTED
 
-**Severity:** MEDIUM — **Effort:** M — **Check name:** `directive-abuse` (proposed)
+**Status:** Shipped (Phase 2 Rotation 13). Check `directive-abuse`
+(`src/enshroud/checks/directive_abuse.py`), category `directive_abuse`,
+**included in `--checks all`**. Sends two read-only `__typename`-anchored probes:
+(1) the non-repeatable `@skip` directive stacked 500 times on one field
+(`{ __typename @skip(if: false) @skip(if: false) ... }`) and (2) an undefined
+directive (`{ __typename @enshroudUnknownDirective }`). Fires MEDIUM when the
+server accepts either probe without a directive/complexity/validation error
+(`accepted_vectors`), **or** when an "Unknown directive" rejection leaks a real
+custom-directive name via a "Did you mean" hint (`leaked_directives`). Never
+mutates — every selection is the `__typename` meta-field. This is the fourth DoS
+axis (directive) beyond `depth-dos` (nesting), `alias-batch` (breadth), and
+`field-dup` (repetition), plus a low-false-positive recon signal for internal
+directive tooling (`@auth`, `@cost`, `@cacheControl`, ...).
+
+**Severity:** MEDIUM — **Effort:** M — **Check name:** `directive-abuse`
 
 Some servers crash or leak under thousands of duplicated `@skip`/`@include`
 directives on a single field, or accept unknown/custom directives that hint at
@@ -347,6 +361,7 @@ browser. Pure response-header analysis — zero active probing.
 | 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
 | 7 | `batch-array` ✅ | `--checks batch-array` | HIGH | S | Yes (shipped) |
 | 8 | `field-dup` ✅ | `--checks field-dup` | MEDIUM | M | Yes (shipped) |
+| 9 | `directive-abuse` ✅ | `--checks directive-abuse` | MEDIUM | M | Yes (shipped) |
 | 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
