@@ -48,6 +48,7 @@ def mock_server():
         suggestions_enabled=True,
         dangerous_mutations=["deleteUser", "removeAccount", "adminReset"],
         cors_misconfigured=True,
+        array_batch_enabled=True,  # exercise the batch-array check
     )
 
     thread = _ServerThread(app, host, port)

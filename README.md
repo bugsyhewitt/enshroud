@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -66,8 +66,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 field-oracle, mutation-enum, cors, csrf,
-                                 fingerprint, apq, all
+                                 batch-array, field-oracle, mutation-enum, cors,
+                                 csrf, fingerprint, apq, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -186,6 +186,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `introspection` | `introspection_enabled` | MEDIUM | Schema enumeration via introspection |
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
+| `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
@@ -195,6 +196,37 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
 | `websocket` _(opt-in)_ | `websocket_unauth_subscription`, `websocket_introspection`, `websocket_no_tls`, `websocket_cswsh` | HIGH | Tests the GraphQL-over-WebSocket subscription transport for unauthenticated handshakes, schema reachability, plaintext `ws://`, and Cross-Site WebSocket Hijacking |
+
+### JSON-array operation batching
+
+The `batch-array` check tests a vector distinct from the `alias-batch` check.
+Where alias batching packs many fields into a *single* operation, **array
+batching** is a transport-level feature: the server accepts a top-level JSON
+array body — `[{"query": "..."}, {"query": "..."}, ...]` — and executes every
+operation in it, returning a parallel array of results.
+
+This matters because array batching lets an attacker pack many *independent*
+operations, including repeated mutations, into one HTTP request. Any defense
+that rate-limits by request rather than by operation is bypassed, which is the
+canonical vector for authentication brute-force and OTP/2FA bypass (pack
+hundreds of `login` or `verifyOtp` mutations into one request) and for
+coupon/voucher stuffing. enshroud reports it as **HIGH** because the downstream
+impact is credential compromise, not mere resource consumption.
+
+Detection is read-only: enshroud batches a benign `{ __typename }` query 50
+times and fires only when the server returns a parallel array of 50 executed
+results. It never sends mutations. The check is part of the default `--checks
+all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks batch-array
+```
+
+To remediate, disable transport-level batching unless required (Apollo Server:
+`allowBatchedHttpRequests: false`), or cap the batch size and rate-limit per
+operation rather than per request — and never expose authentication mutations to
+batched execution.
 
 ### Engine fingerprinting
 

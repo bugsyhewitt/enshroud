@@ -17,6 +17,7 @@ def create_app(
     cors_misconfigured: bool = True,
     accept_form_post: bool = False,
     accept_get_query: bool = False,
+    array_batch_enabled: bool = False,
     engine: str | None = None,
     apq_enabled: bool = False,
     apq_require_auth: bool = False,
@@ -34,6 +35,7 @@ def create_app(
         "cors_misconfigured": cors_misconfigured,
         "accept_form_post": accept_form_post,
         "accept_get_query": accept_get_query,
+        "array_batch_enabled": array_batch_enabled,
         "engine": engine,
         "apq_enabled": apq_enabled,
         "apq_require_auth": apq_require_auth,
@@ -265,6 +267,29 @@ def create_app(
                 status_code=400,
                 content={"errors": [{"message": "Invalid JSON"}]},
             )
+
+        # ── JSON-array batching ─────────────────────────────────────────────
+        # A top-level JSON array is a transport-level operation batch. A server
+        # with array batching enabled executes every element and returns a
+        # parallel array of results; one with it disabled rejects the request.
+        if isinstance(body, list):
+            if cfg["array_batch_enabled"]:
+                results = [
+                    {"data": {"__typename": "Query"}} for _ in body
+                ]
+                response = JSONResponse(content=results)
+                _add_cors(response)
+                return response
+            response = JSONResponse(
+                status_code=400,
+                content={
+                    "errors": [
+                        {"message": "Batched requests are not supported."}
+                    ]
+                },
+            )
+            _add_cors(response)
+            return response
 
         # ── APQ handling ────────────────────────────────────────────────────
         extensions = body.get("extensions") or {}

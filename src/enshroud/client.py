@@ -43,6 +43,26 @@ class GraphQLClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def post_batch(self, queries: list[str]) -> httpx.Response:
+        """Send a JSON-array batch of operations in a single HTTP request.
+
+        Many GraphQL servers accept a top-level JSON array
+        ``[{"query": "..."}, {"query": "..."}]`` and execute every operation in
+        it, returning a parallel array of results. This transport-level batching
+        is distinct from alias batching: it lets an attacker pack many *separate*
+        operations (including repeated mutations) into one request, which is the
+        classic vector for bypassing per-request rate limits on login / OTP /
+        coupon mutations. Returns the raw httpx Response.
+        """
+        payload = [{"query": q} for q in queries]
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                self.endpoint,
+                headers=self.headers,
+                content=json.dumps(payload),
+            )
+            return resp
+
     async def options(self, extra_headers: dict[str, str] | None = None) -> httpx.Response:
         """Send an OPTIONS request."""
         headers = dict(self.headers)
