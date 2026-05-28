@@ -35,6 +35,27 @@ def render_h1md(findings: list[dict[str, Any]]) -> str:
         block += f"{impact}\n\n"
         block += "## Proof of Concept\n"
         block += f"{evidence}\n\n"
+
+        engine_context = finding.get("engine_context")
+        if isinstance(engine_context, dict):
+            display = engine_context.get("engine_display_name") or engine_context.get(
+                "engine_name", "identified engine"
+            )
+            confidence = engine_context.get("confidence", "")
+            block += "## Engine Correlation\n"
+            block += f"Identified engine: **{display}**"
+            if confidence:
+                block += f" (confidence: {confidence})"
+            block += "\n\n"
+            note = engine_context.get("note")
+            if note:
+                block += f"{note}\n\n"
+            matched = engine_context.get("matched_behaviors") or []
+            for behavior in matched:
+                block += f"- {behavior}\n"
+            if matched:
+                block += "\n"
+
         block += "## Recommended Mitigation\n"
         block += f"{remediation}\n"
 
