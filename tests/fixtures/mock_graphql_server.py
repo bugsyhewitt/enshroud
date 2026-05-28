@@ -26,6 +26,8 @@ def create_app(
     injectable_arg: dict[str, Any] | None = None,
     set_cookies: list[str] | None = None,
     field_dup_limit: int | None = None,
+    directive_validation: bool = False,
+    custom_directives: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -58,6 +60,17 @@ def create_app(
         # When set, the server rejects a query whose repeated __typename count
         # or fragment-spread count exceeds this limit with a complexity error.
         "field_dup_limit": field_dup_limit,
+        # Directive validation, used by the directive-abuse check. When True the
+        # server behaves like a spec-compliant validating executor: it rejects a
+        # repeated non-repeatable directive ("may not be used more than once")
+        # and an unknown directive ("Unknown directive ..."). When False it
+        # silently accepts both.
+        "directive_validation": directive_validation,
+        # Real custom directive names (without the @). When set and an unknown
+        # directive probe is lexically close to one of these, the server emits a
+        # "Did you mean @X" suggestion that leaks the real directive name —
+        # exercising the directive-abuse recon path.
+        "custom_directives": custom_directives,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -423,6 +436,59 @@ def create_app(
                 )
                 _add_cors(response)
                 return response
+
+        # ── Directive-abuse probes ──────────────────────────────────────────
+        # The directive-abuse check sends two probes against __typename:
+        #   1. overloading: { __typename @skip(if: false) @skip(if: false) ... }
+        #   2. unknown:     { __typename @enshroudUnknownDirective }
+        # A validating server rejects both; a permissive one accepts them.
+        skip_count = query.count("@skip")
+        unknown_match = re.search(r"@(enshroudUnknownDirective|[A-Za-z_]\w*)\b", query)
+        has_unknown_directive = (
+            "@enshroudUnknownDirective" in query
+        )
+        # Only treat as a directive probe when it is a bare __typename selection
+        # carrying directives (avoids colliding with the fingerprint @skip probe,
+        # which is matched later and uses a query{} wrapper / different shape).
+        is_directive_overload_probe = skip_count >= 2 and "__typename" in query
+        if is_directive_overload_probe:
+            if cfg["directive_validation"]:
+                response = JSONResponse(
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    'The directive "@skip" may not be used more '
+                                    "than once at this location."
+                                )
+                            }
+                        ]
+                    }
+                )
+                _add_cors(response)
+                return response
+            response = JSONResponse(content={"data": {"__typename": "Query"}})
+            _add_cors(response)
+            return response
+
+        if has_unknown_directive:
+            if cfg["directive_validation"]:
+                msg = 'Unknown directive "@enshroudUnknownDirective".'
+                # Leak a real custom directive via a suggestion when close.
+                customs = cfg["custom_directives"] or []
+                suggestion = _closest_field("enshroudUnknownDirective", customs)
+                # _closest_field needs lexical overlap; for recon tests we make
+                # the probe explicitly suggestible by matching any configured
+                # directive when the probe shares a prefix, else first custom.
+                if customs and cfg["suggestions_enabled"]:
+                    hint = suggestion or customs[0]
+                    msg += f' Did you mean "@{hint}"?'
+                response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
+            response = JSONResponse(content={"data": {"__typename": "Query"}})
+            _add_cors(response)
+            return response
 
         # Handle introspection queries
         # Use word-boundary checks to avoid matching __typename as __type
