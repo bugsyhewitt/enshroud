@@ -25,6 +25,7 @@ def create_app(
     schema_fields: list[str] | None = None,
     injectable_arg: dict[str, Any] | None = None,
     set_cookies: list[str] | None = None,
+    field_dup_limit: int | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -53,6 +54,10 @@ def create_app(
         # cookie-posture check. Each entry is a full Set-Cookie value, e.g.
         # "sid=abc; Path=/; SameSite=None".
         "set_cookies": set_cookies,
+        # Field-duplication / fragment-spread cap, used by the field-dup check.
+        # When set, the server rejects a query whose repeated __typename count
+        # or fragment-spread count exceeds this limit with a complexity error.
+        "field_dup_limit": field_dup_limit,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -389,6 +394,28 @@ def create_app(
                                 "message": (
                                     f"Alias count {alias_count} exceeds batch limit "
                                     f"{cfg['batch_limit']}"
+                                )
+                            }
+                        ]
+                    }
+                )
+                _add_cors(response)
+                return response
+
+        # Check field-duplication / fragment-spread limit. A protected server
+        # caps repeated identical selections and repeated fragment spreads.
+        if cfg["field_dup_limit"] is not None:
+            typename_dups = len(re.findall(r"\b__typename\b", query))
+            spread_dups = len(re.findall(r"\.\.\.\s*\w+", query))
+            repetition = max(typename_dups, spread_dups)
+            if repetition > cfg["field_dup_limit"]:
+                response = JSONResponse(
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    f"Query complexity {repetition} exceeds the "
+                                    f"maximum allowed {cfg['field_dup_limit']}"
                                 )
                             }
                         ]

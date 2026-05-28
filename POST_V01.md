@@ -287,9 +287,19 @@ finding's reproduction field.
 
 ---
 
-### 8. Field-duplication / circular-fragment DoS (candidate)
+### 8. Field-duplication / circular-fragment DoS ✅ IMPLEMENTED
 
-**Severity:** MEDIUM (DoS) — **Effort:** M — **Check name:** `field-dup` (proposed)
+**Status:** Shipped (Phase 2 Rotation 12). Check `field-dup`
+(`src/enshroud/checks/field_dup.py`), category `field_duplication_dos`,
+**included in `--checks all`**. Sends two read-only probes built only from
+`__typename`: `{ __typename __typename ... }` (500 repeated fields) and a
+fragment spread repeated 500 times
+(`{ ...F ...F ... } fragment F on Query { __typename }`). Fires MEDIUM for each
+probe the server accepts without a complexity / fragment / limit error; the
+`evidence` field lists the accepted vectors. Never mutates — every selection is
+the `__typename` meta-field.
+
+**Severity:** MEDIUM (DoS) — **Effort:** M — **Check name:** `field-dup`
 
 Detects servers that do not de-duplicate repeated identical fields or that
 accept circular fragment spreads, both of which amplify response cost
@@ -336,6 +346,7 @@ browser. Pure response-header analysis — zero active probing.
 | 5 | `apq` | `--checks apq` | MEDIUM | S | Yes |
 | 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
 | 7 | `batch-array` ✅ | `--checks batch-array` | HIGH | S | Yes (shipped) |
+| 8 | `field-dup` ✅ | `--checks field-dup` | MEDIUM | M | Yes (shipped) |
 | 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
