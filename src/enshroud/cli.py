@@ -26,6 +26,7 @@ ALL_CHECKS = [
     "mutation-enum",
     "cors",
     "csrf",
+    "cookie-posture",
     "fingerprint",
     "apq",
 ]
@@ -65,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, batch-array, "
-            "field-oracle, mutation-enum, cors, csrf, fingerprint, apq, all. "
+            "field-oracle, mutation-enum, cors, csrf, cookie-posture, "
+            "fingerprint, apq, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -150,6 +152,7 @@ async def run_checks(
         alias_batch,
         apq,
         batch_array,
+        cookie_posture,
         cors,
         csrf,
         depth_dos,
@@ -172,6 +175,7 @@ async def run_checks(
         "mutation-enum": mutation_enum.check,
         "cors": cors.check,
         "csrf": csrf.check,
+        "cookie-posture": cookie_posture.check,
         "fingerprint": fingerprint.check,
         "apq": apq.check,
         "websocket": websocket.check,

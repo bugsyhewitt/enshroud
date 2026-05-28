@@ -305,9 +305,18 @@ Some servers crash or leak under thousands of duplicated `@skip`/`@include`
 directives on a single field, or accept unknown/custom directives that hint at
 internal tooling. A reliable DoS-and-recon probe with low false-positive risk.
 
-### 10. CSRF token / cross-site cookie posture (candidate)
+### 10. CSRF token / cross-site cookie posture ✅ IMPLEMENTED
 
-**Severity:** MEDIUM — **Effort:** S — **Check name:** extend `cors`/`csrf`
+**Status:** Shipped (Phase 2 Rotation 11). Standalone check `cookie-posture`
+(`src/enshroud/checks/cookie_posture.py`), category `insecure_cookie_posture`,
+**included in `--checks all`**. Sends a single benign `{ __typename }` request
+and inspects every `Set-Cookie` response header, firing MEDIUM for each cookie
+that is `SameSite=None`/missing `SameSite`, missing `Secure`, or missing
+`HttpOnly`. Pure response-header analysis — zero active probing, no payloads,
+no mutations. Implemented as its own check (rather than folded into `cors`/`csrf`)
+so it can be selected independently and reports per-cookie weaknesses.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `cookie-posture`
 
 Inspect `Set-Cookie` attributes (`SameSite`, `Secure`, `HttpOnly`) on the
 endpoint and report missing `SameSite=Lax/Strict`, which is the precondition that
@@ -327,5 +336,6 @@ browser. Pure response-header analysis — zero active probing.
 | 5 | `apq` | `--checks apq` | MEDIUM | S | Yes |
 | 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
 | 7 | `batch-array` ✅ | `--checks batch-array` | HIGH | S | Yes (shipped) |
+| 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

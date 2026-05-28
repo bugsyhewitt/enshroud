@@ -24,6 +24,7 @@ def create_app(
     apq_rate_limit: int | None = None,
     schema_fields: list[str] | None = None,
     injectable_arg: dict[str, Any] | None = None,
+    set_cookies: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -48,6 +49,10 @@ def create_app(
         #         field with a String arg and reflects a DBMS error / sleeps
         #         when an injection payload hits that arg.
         "injectable_arg": injectable_arg,
+        # Raw Set-Cookie header values emitted on every response, used by the
+        # cookie-posture check. Each entry is a full Set-Cookie value, e.g.
+        # "sid=abc; Path=/; SameSite=None".
+        "set_cookies": set_cookies,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -84,6 +89,14 @@ def create_app(
         if profile:
             for k, v in profile.get("headers", {}).items():
                 response.headers[k] = v
+        return response
+
+    @app.middleware("http")
+    async def _emit_cookies(request: Request, call_next):
+        """Append configured Set-Cookie headers to every response."""
+        response = await call_next(request)
+        for cookie in cfg["set_cookies"] or []:
+            response.headers.append("set-cookie", cookie)
         return response
 
     def _add_cors(response: JSONResponse) -> JSONResponse:
