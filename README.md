@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -67,7 +67,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
                                  batch-array, field-oracle, mutation-enum, cors,
-                                 csrf, fingerprint, apq, all
+                                 csrf, cookie-posture, fingerprint, apq, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -191,6 +191,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
+| `cookie-posture` | `insecure_cookie_posture` | MEDIUM | Session cookies missing `SameSite`/`Secure`/`HttpOnly` (browser-side precondition for CSRF/CSWSH) |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
@@ -227,6 +228,43 @@ To remediate, disable transport-level batching unless required (Apollo Server:
 `allowBatchedHttpRequests: false`), or cap the batch size and rate-limit per
 operation rather than per request — and never expose authentication mutations to
 batched execution.
+
+### Cookie posture
+
+The `cookie-posture` check is the response-header companion to the active `csrf`,
+`batch-array`, and `websocket` checks. Those checks prove a server *accepts*
+cross-origin or batched state-changing requests; this check inspects whether the
+session cookies the server hands out can actually be *replayed* by a victim's
+browser from an attacker's page — the missing link that turns those findings into
+working real-world attacks.
+
+It sends a single benign `{ __typename }` request and inspects every `Set-Cookie`
+response header, flagging a **MEDIUM** `insecure_cookie_posture` finding for any
+cookie that is:
+
+- `SameSite=None`, or missing the `SameSite` attribute entirely — the cookie is
+  (or may be) sent on cross-site requests, the precondition for CSRF and
+  Cross-Site WebSocket Hijacking;
+- missing `Secure` — the cookie can travel over plaintext HTTP (MITM /
+  sidejacking), and `SameSite=None` without `Secure` is rejected by modern
+  browsers anyway;
+- missing `HttpOnly` — the cookie is readable by JavaScript and stealable via XSS.
+
+Detection is pure response-header analysis: enshroud sends no payloads, mutates
+nothing, and never probes actively, so it carries effectively zero
+false-positive risk and is part of the default `--checks all`. Each weak cookie
+is reported individually; well-hardened cookies (`SameSite=Lax/Strict` + `Secure`
++ `HttpOnly`) produce no finding, and an endpoint that sets no cookies is silent.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks cookie-posture
+```
+
+Remediate by setting session cookies with `SameSite=Lax` (or `Strict` where the
+UX allows), `Secure`, and `HttpOnly`; reserve `SameSite=None` for cookies that
+genuinely require cross-site delivery and always pair it with `Secure`. This
+complements — but does not replace — server-side CSRF token validation.
 
 ### Engine fingerprinting
 
