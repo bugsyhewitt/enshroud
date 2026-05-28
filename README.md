@@ -76,7 +76,43 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --fuzz-rate RPS         schema-fuzz probe rate, req/s (default: 5; <=0 = no limit)
 --active                Enable active/blind probing for the injection check
                         (time-based SQLi). Off by default.
+--fail-on SEVERITY      Exit with code 3 if any finding is at or above this
+                        severity (for CI/CD gating). One of CRITICAL, HIGH,
+                        MEDIUM, LOW, INFO (case-insensitive). Output is still
+                        printed. Off by default.
 ```
+
+### Exit codes
+
+enshroud uses distinct exit codes so it can gate automation pipelines:
+
+| Code | Meaning |
+|---|---|
+| `0` | Scan completed; no finding met the `--fail-on` threshold (also the default when `--fail-on` is not supplied, regardless of findings) |
+| `1` | Tool/usage error (scope file missing, no valid checks, invalid `--fail-on` value) |
+| `2` | Target is out of scope |
+| `3` | Scan completed and at least one finding met or exceeded the `--fail-on` threshold |
+
+The report (JSON or H1-markdown) is always written to stdout before the
+exit-code policy is applied, so `--fail-on` never suppresses output.
+
+### CI/CD gating with `--fail-on`
+
+By default enshroud exits `0` on any successful scan, so its output can be
+collected without failing a job. Pass `--fail-on` to turn a finding at or above
+a chosen severity into a non-zero exit, failing the pipeline:
+
+```bash
+# Fail the build if any HIGH or CRITICAL finding is present
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --fail-on high
+```
+
+Severities are ranked `CRITICAL > HIGH > MEDIUM > LOW > INFO`; `--fail-on medium`
+trips on MEDIUM, HIGH, and CRITICAL findings. The threshold is case-insensitive.
+An unrecognised value is rejected before the scan runs (exit `1`). Findings with
+a missing or unknown severity are treated as `INFO` so they never accidentally
+trip a higher gate.
 
 ### Examples
 

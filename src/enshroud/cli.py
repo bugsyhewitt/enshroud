@@ -10,6 +10,12 @@ from enshroud.client import GraphQLClient
 from enshroud.correlate import correlate_findings
 from enshroud.output import render_h1md, render_json
 from enshroud.scope import get_target_host, load_scope, target_in_scope
+from enshroud.severity import (
+    FAIL_ON_EXIT_CODE,
+    SEVERITY_ORDER,
+    findings_meet_threshold,
+    normalize_threshold,
+)
 
 ALL_CHECKS = [
     "introspection",
@@ -99,6 +105,18 @@ def build_parser() -> argparse.ArgumentParser:
             "SQLi). Off by default; only affects --checks injection."
         ),
     )
+    parser.add_argument(
+        "--fail-on",
+        metavar="SEVERITY",
+        default=None,
+        help=(
+            "Exit with code 3 if any finding is at or above this severity "
+            "(for CI/CD gating). One of: "
+            f"{', '.join(SEVERITY_ORDER)}. Case-insensitive. "
+            "Output is still printed. Off by default (always exit 0 on a "
+            "successful scan)."
+        ),
+    )
     return parser
 
 
@@ -186,6 +204,15 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Validate --fail-on up front so a typo fails fast instead of after a scan.
+    fail_on: str | None = None
+    if args.fail_on is not None:
+        try:
+            fail_on = normalize_threshold(args.fail_on)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     # Load scope and validate target
     try:
         scope_entries = load_scope(args.scope_file)
@@ -217,6 +244,16 @@ def main() -> None:
         print(render_h1md(findings))
     else:
         print(render_json(findings))
+
+    # CI/CD gating: exit non-zero if a finding meets the --fail-on threshold.
+    # Output above is always emitted first so reports are never suppressed.
+    if fail_on is not None and findings_meet_threshold(findings, fail_on):
+        print(
+            f"fail-on: at least one finding is >= {fail_on}; "
+            f"exiting {FAIL_ON_EXIT_CODE}",
+            file=sys.stderr,
+        )
+        sys.exit(FAIL_ON_EXIT_CODE)
 
 
 if __name__ == "__main__":
