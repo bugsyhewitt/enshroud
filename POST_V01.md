@@ -229,6 +229,93 @@ Clairvoyance is the canonical tool. It is Python-based and async but requires a 
 
 ---
 
+---
+
+## Phase 2 Rotation 10 — roadmap extension
+
+All six original directions are shipped. The directions below were added after a
+fresh gap analysis against the PortSwigger GraphQL labs, the OWASP GraphQL Cheat
+Sheet, and the 2024–2026 HackerOne disclosure corpus.
+
+---
+
+### 7. JSON-array operation batching ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 10). Check `batch-array`
+(`src/enshroud/checks/batch_array.py`), category `array_batching`, **included in
+`--checks all`**. Sends a top-level JSON array of 50 benign `{ __typename }`
+operations via the new `GraphQLClient.post_batch` helper and fires HIGH when the
+server returns a parallel array of 50 executed results. Read-only — never sends
+mutations.
+
+**Severity:** HIGH (authentication brute-force / 2FA bypass)
+**Effort:** S (small)
+**Check name:** `batch-array`
+
+**What it detects:**
+Transport-level batching — the server executing a top-level JSON-array request
+body `[{"query": ...}, {"query": ...}]`. This is *distinct* from the existing
+`alias-batch` check, which only packs many fields into a single operation. Array
+batching packs many *independent* operations, including repeated mutations, into
+one HTTP request.
+
+**Attack value:**
+This is the canonical rate-limit-bypass vector. Because per-request throttling
+counts the one HTTP request, an attacker can pack hundreds of `login` /
+`verifyOtp` / `redeemCoupon` mutations into a single batch and brute-force
+credentials, bypass 2FA, or stuff coupon codes. Multiple disclosed reports
+(HackerOne / Wallarm GraphQL batching writeups) turn this into account takeover.
+The `alias-batch` check did not cover the array transport at all — a genuine gap.
+
+**Competitor gap:**
+graphql-cop checks alias/array batching only as a DoS signal at MEDIUM; enshroud
+frames it at HIGH because the real-world impact is auth brute-force, and ships
+the explicit weaponisation guidance (swap the probe for an auth mutation) in the
+finding's reproduction field.
+
+**Implementation notes (as shipped):**
+1. `GraphQLClient.post_batch(queries)` posts `[{"query": q}, ...]` as JSON.
+2. Probe batches `{ __typename }` ×50; finding fires only when ≥50 array
+   elements come back with `data` (full execution), avoiding false positives on
+   servers that partially execute or reject batches.
+3. Category `array_batching`, severity HIGH, in `--checks all`.
+
+**References:**
+- PortSwigger Web Security Academy: "Bypassing rate limiting via GraphQL batching"
+- Wallarm: "GraphQL Batching Attack" writeups
+- OWASP GraphQL Cheat Sheet: "Batching Attacks"
+
+---
+
+### 8. Field-duplication / circular-fragment DoS (candidate)
+
+**Severity:** MEDIUM (DoS) — **Effort:** M — **Check name:** `field-dup` (proposed)
+
+Detects servers that do not de-duplicate repeated identical fields or that
+accept circular fragment spreads, both of which amplify response cost
+super-linearly. Complements `depth-dos` (depth) and `alias-batch` (breadth) with
+the third DoS axis: repetition. Probe `{ a a a ... }` and a self-referential
+fragment, measure whether the server caps or expands the work.
+
+### 9. Directive-overloading / `@skip`/`@include` abuse (candidate)
+
+**Severity:** MEDIUM — **Effort:** M — **Check name:** `directive-abuse` (proposed)
+
+Some servers crash or leak under thousands of duplicated `@skip`/`@include`
+directives on a single field, or accept unknown/custom directives that hint at
+internal tooling. A reliable DoS-and-recon probe with low false-positive risk.
+
+### 10. CSRF token / cross-site cookie posture (candidate)
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** extend `cors`/`csrf`
+
+Inspect `Set-Cookie` attributes (`SameSite`, `Secure`, `HttpOnly`) on the
+endpoint and report missing `SameSite=Lax/Strict`, which is the precondition that
+makes the existing `csrf` and `array_batching` findings exploitable from a
+browser. Pure response-header analysis — zero active probing.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -239,5 +326,6 @@ Clairvoyance is the canonical tool. It is Python-based and async but requires a 
 | 4 | `injection` | `--checks injection` | CRITICAL | M | No (opt-in, active) |
 | 5 | `apq` | `--checks apq` | MEDIUM | S | Yes |
 | 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
+| 7 | `batch-array` ✅ | `--checks batch-array` | HIGH | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

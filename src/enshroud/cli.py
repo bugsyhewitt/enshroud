@@ -21,6 +21,7 @@ ALL_CHECKS = [
     "introspection",
     "depth-dos",
     "alias-batch",
+    "batch-array",
     "field-oracle",
     "mutation-enum",
     "cors",
@@ -63,8 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CHECK",
         help=(
             "Comma-separated checks to run (default: all). "
-            "Choices: introspection, depth-dos, alias-batch, field-oracle, "
-            "mutation-enum, cors, csrf, fingerprint, apq, all. "
+            "Choices: introspection, depth-dos, alias-batch, batch-array, "
+            "field-oracle, mutation-enum, cors, csrf, fingerprint, apq, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -148,6 +149,7 @@ async def run_checks(
     from enshroud.checks import (
         alias_batch,
         apq,
+        batch_array,
         cors,
         csrf,
         depth_dos,
@@ -165,6 +167,7 @@ async def run_checks(
         "introspection": introspection.check,
         "depth-dos": depth_dos.check,
         "alias-batch": alias_batch.check,
+        "batch-array": batch_array.check,
         "field-oracle": field_oracle.check,
         "mutation-enum": mutation_enum.check,
         "cors": cors.check,
