@@ -26,6 +26,7 @@ ALL_CHECKS = [
 # they are slow, noisy, or actively probe the target.
 OPT_IN_CHECKS = [
     "schema-fuzz",
+    "injection",
 ]
 
 VALID_CHECKS = ALL_CHECKS + OPT_IN_CHECKS
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, field-oracle, "
             "mutation-enum, cors, csrf, fingerprint, apq, all. "
-            "Opt-in (not in 'all'): schema-fuzz."
+            "Opt-in (not in 'all'): schema-fuzz, injection."
         ),
     )
     parser.add_argument(
@@ -88,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Set <= 0 to disable throttling."
         ),
     )
+    parser.add_argument(
+        "--active",
+        action="store_true",
+        help=(
+            "Enable active/blind probing for the injection check (time-based "
+            "SQLi). Off by default; only affects --checks injection."
+        ),
+    )
     return parser
 
 
@@ -113,6 +122,7 @@ async def run_checks(
     checks: list[str],
     client: GraphQLClient,
     fuzz_rate: float = 5.0,
+    active: bool = False,
 ) -> list[dict[str, Any]]:
     """Run selected checks and aggregate findings."""
     from enshroud.checks import (
@@ -123,6 +133,7 @@ async def run_checks(
         depth_dos,
         field_oracle,
         fingerprint,
+        injection,
         introspection,
         mutation_enum,
         schema_fuzz,
@@ -146,6 +157,11 @@ async def run_checks(
         if check_name == "schema-fuzz":
             findings.extend(
                 await schema_fuzz.check(client, fuzz_rate=fuzz_rate)
+            )
+            continue
+        if check_name == "injection":
+            findings.extend(
+                await injection.check(client, active=active)
             )
             continue
         fn = check_map.get(check_name)
@@ -183,7 +199,9 @@ def main() -> None:
         timeout=args.timeout,
     )
 
-    findings = asyncio.run(run_checks(checks, client, fuzz_rate=args.fuzz_rate))
+    findings = asyncio.run(
+        run_checks(checks, client, fuzz_rate=args.fuzz_rate, active=args.active)
+    )
 
     if args.format == "h1md":
         print(render_h1md(findings))

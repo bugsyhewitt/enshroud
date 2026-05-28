@@ -22,6 +22,7 @@ def create_app(
     apq_require_auth: bool = False,
     apq_rate_limit: int | None = None,
     schema_fields: list[str] | None = None,
+    injectable_arg: dict[str, Any] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -39,6 +40,12 @@ def create_app(
         "apq_rate_limit": apq_rate_limit,
         # Real top-level fields, used by the schema-fuzz oracle simulation.
         "schema_fields": schema_fields,
+        # Injectable argument simulation, used by the injection check.
+        # Shape: {"field": str, "arg": str, "dbms_error": str | None,
+        #         "time_based": bool}. When set, the server exposes a query
+        #         field with a String arg and reflects a DBMS error / sleeps
+        #         when an injection payload hits that arg.
+        "injectable_arg": injectable_arg,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -124,6 +131,28 @@ def create_app(
         """Count aliased fields (pattern: word: word)."""
         return len(re.findall(r'\b\w+\s*:\s*\w+', query))
 
+    def _query_fields_for_introspection() -> list[dict]:
+        """Query-type fields, including an injectable field+arg when configured."""
+        fields: list[dict] = [{"name": "__typename", "args": []}]
+        inj = cfg["injectable_arg"]
+        if inj:
+            fields.append(
+                {
+                    "name": inj["field"],
+                    "args": [
+                        {
+                            "name": inj["arg"],
+                            "type": {
+                                "kind": "SCALAR",
+                                "name": "String",
+                                "ofType": None,
+                            },
+                        }
+                    ],
+                }
+            )
+        return fields
+
     def _build_introspection_response(dangerous_mutations: list[str]) -> dict:
         mutation_fields = [
             {"name": name, "description": None, "args": []}
@@ -132,7 +161,10 @@ def create_app(
         return {
             "data": {
                 "__schema": {
-                    "queryType": {"name": "Query"},
+                    "queryType": {
+                        "name": "Query",
+                        "fields": _query_fields_for_introspection(),
+                    },
                     "mutationType": {"name": "Mutation"} if mutation_fields else None,
                     "types": [
                         {
@@ -345,8 +377,16 @@ def create_app(
                 _add_cors(response)
                 return response
 
-            # Detect what kind of introspection query
-            if "mutationType" in query and "fields" in query and "args" in query:
+            # Detect what kind of introspection query. The mutation-enum check
+            # asks for mutationType fields only; the injection check asks for
+            # both queryType and mutationType with args. Route the latter to the
+            # full-schema response so query-type args are returned.
+            if (
+                "mutationType" in query
+                and "fields" in query
+                and "args" in query
+                and "queryType" not in query
+            ):
                 # mutation-enum style query
                 resp_data = _build_mutation_introspection_response(cfg["dangerous_mutations"])
             else:
@@ -402,6 +442,45 @@ def create_app(
         if alias_matches:
             data = {alias: "Query" for alias in alias_matches}
             response = JSONResponse(content={"data": data})
+            _add_cors(response)
+            return response
+
+        # Injection probes: when an injectable arg is configured, detect probe
+        # queries against that field+arg and respond as a vulnerable backend
+        # would (reflect a DBMS error and/or sleep for time-based payloads).
+        inj = cfg["injectable_arg"]
+        if inj and inj["field"] in query and f"{inj['arg']}:" in query:
+            # Extract the literal value passed to the injectable argument.
+            m = re.search(
+                rf"{re.escape(inj['arg'])}\s*:\s*(\"(?:[^\"\\]|\\.)*\"|[^)\s]+)",
+                query,
+            )
+            raw_val = m.group(1) if m else ""
+            # Strip surrounding quotes / unescape for matching.
+            val = raw_val
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+
+            injection_payload_markers = ("'", '"', "OR 1=1", "$gt", "\\", "SELECT", "sleep", "pg_sleep")
+            is_attack = any(marker in val for marker in injection_payload_markers)
+
+            # Time-based simulation: sleep when a sleep payload arrives.
+            if inj.get("time_based") and ("pg_sleep" in val or "SLEEP" in val.upper()):
+                import time as _time
+                _time.sleep(3.2)
+                response = JSONResponse(content={"data": {inj["field"]: {"__typename": "Object"}}})
+                _add_cors(response)
+                return response
+
+            if is_attack and inj.get("dbms_error"):
+                response = JSONResponse(
+                    content={"errors": [{"message": inj["dbms_error"]}]}
+                )
+                _add_cors(response)
+                return response
+
+            # Benign value (e.g. baseline "1") → normal data.
+            response = JSONResponse(content={"data": {inj["field"]: {"__typename": "Object"}}})
             _add_cors(response)
             return response
 

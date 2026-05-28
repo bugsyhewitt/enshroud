@@ -122,3 +122,29 @@ def test_fuzz_rate_flag_parses():
         ["--target", "http://x/graphql", "--scope-file", "s.txt", "--fuzz-rate", "12.5"]
     )
     assert args.fuzz_rate == 12.5
+
+
+def test_injection_is_opt_in_not_in_all():
+    """injection is excluded from 'all' but accepted as an explicit check."""
+    from enshroud.cli import OPT_IN_CHECKS, VALID_CHECKS, parse_checks
+
+    assert "injection" in OPT_IN_CHECKS
+    assert "injection" in VALID_CHECKS
+    # 'all' must not pull in the active-probing injection check.
+    assert "injection" not in parse_checks("all")
+    # But an explicit request is honoured.
+    assert parse_checks("injection") == ["injection"]
+
+
+def test_active_flag_parses():
+    """--active is exposed and defaults to False."""
+    from enshroud.cli import build_parser
+
+    default = build_parser().parse_args(
+        ["--target", "http://x/graphql", "--scope-file", "s.txt"]
+    )
+    assert default.active is False
+    enabled = build_parser().parse_args(
+        ["--target", "http://x/graphql", "--scope-file", "s.txt", "--active"]
+    )
+    assert enabled.active is True

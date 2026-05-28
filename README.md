@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, and Clairvoyance-style schema reconstruction.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, and SQL/NoSQL injection probing.
 
 ## Ethical Use
 
@@ -59,11 +59,13 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                         Choices: introspection, depth-dos, alias-batch,
                                  field-oracle, mutation-enum, cors, csrf,
                                  fingerprint, apq, all
-                        Opt-in (not in 'all'): schema-fuzz
+                        Opt-in (not in 'all'): schema-fuzz, injection
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
 --fuzz-rate RPS         schema-fuzz probe rate, req/s (default: 5; <=0 = no limit)
+--active                Enable active/blind probing for the injection check
+                        (time-based SQLi). Off by default.
 ```
 
 ### Examples
@@ -145,6 +147,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
+| `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
 
 ### Engine fingerprinting
 
@@ -188,6 +191,40 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt \
 This is the technique behind
 [Clairvoyance](https://github.com/nikitastupin/clairvoyance); enshroud bundles it
 so you get one tool with H1-markdown output instead of two.
+
+### Injection probing (SQL / NoSQL)
+
+The opt-in `injection` check resurrects the original niche of
+[GraphQLmap](https://github.com/swisskyrepo/GraphQLmap): fuzzing GraphQL
+arguments for injection. It enumerates query and mutation arguments via
+introspection, then injects a small list of classic payloads (`'`, `"`,
+`1 OR 1=1`, `1' OR '1'='1`, `\`, and the NoSQL operator `{"$gt": ""}`) into each
+scalar `String`/`ID`/`Int` argument. If the response surfaces a known DBMS error
+fingerprint (MySQL, PostgreSQL, MSSQL, SQLite, Oracle, MongoDB), enshroud reports
+a CRITICAL `sql_injection_signal` (or `nosql_injection_signal`) finding naming the
+exact field, argument, and triggering payload.
+
+Because it actively sends crafted payloads, `injection` is **not** part of
+`--checks all` and must be requested explicitly. enshroud performs **detection
+only** — it never attempts exploitation or data extraction. Always confirm and
+demonstrate impact manually before reporting.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks injection
+```
+
+Time-based (blind) probing — which deliberately tries to make the backend sleep —
+is gated behind the `--active` flag and is off by default:
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks injection --active
+```
+
+The check requires introspection to enumerate arguments; if introspection is
+disabled it produces no findings. Every request flows through the same scope
+validator as the rest of enshroud.
 
 ## Attribution
 
