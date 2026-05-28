@@ -22,6 +22,14 @@ ALL_CHECKS = [
     "apq",
 ]
 
+# Opt-in checks: valid to request explicitly, but excluded from "all" because
+# they are slow, noisy, or actively probe the target.
+OPT_IN_CHECKS = [
+    "schema-fuzz",
+]
+
+VALID_CHECKS = ALL_CHECKS + OPT_IN_CHECKS
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -47,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, field-oracle, "
-            "mutation-enum, cors, csrf, fingerprint, apq, all"
+            "mutation-enum, cors, csrf, fingerprint, apq, all. "
+            "Opt-in (not in 'all'): schema-fuzz."
         ),
     )
     parser.add_argument(
@@ -69,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Request timeout in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--fuzz-rate",
+        type=float,
+        default=5.0,
+        metavar="RPS",
+        help=(
+            "schema-fuzz probe rate in requests/second (default: 5). "
+            "Set <= 0 to disable throttling."
+        ),
+    )
     return parser
 
 
@@ -79,9 +98,10 @@ def parse_checks(checks_str: str) -> list[str]:
         return list(ALL_CHECKS)
     result: list[str] = []
     for c in raw:
-        if c not in ALL_CHECKS:
+        if c not in VALID_CHECKS:
             print(
-                f"Warning: unknown check '{c}'. Valid choices: {', '.join(ALL_CHECKS)}, all",
+                f"Warning: unknown check '{c}'. Valid choices: "
+                f"{', '.join(VALID_CHECKS)}, all",
                 file=sys.stderr,
             )
         else:
@@ -92,6 +112,7 @@ def parse_checks(checks_str: str) -> list[str]:
 async def run_checks(
     checks: list[str],
     client: GraphQLClient,
+    fuzz_rate: float = 5.0,
 ) -> list[dict[str, Any]]:
     """Run selected checks and aggregate findings."""
     from enshroud.checks import (
@@ -104,8 +125,10 @@ async def run_checks(
         fingerprint,
         introspection,
         mutation_enum,
+        schema_fuzz,
     )
 
+    # Checks with the uniform (client) -> findings signature.
     check_map = {
         "introspection": introspection.check,
         "depth-dos": depth_dos.check,
@@ -120,6 +143,11 @@ async def run_checks(
 
     findings: list[dict[str, Any]] = []
     for check_name in checks:
+        if check_name == "schema-fuzz":
+            findings.extend(
+                await schema_fuzz.check(client, fuzz_rate=fuzz_rate)
+            )
+            continue
         fn = check_map.get(check_name)
         if fn:
             result = await fn(client)
@@ -155,7 +183,7 @@ def main() -> None:
         timeout=args.timeout,
     )
 
-    findings = asyncio.run(run_checks(checks, client))
+    findings = asyncio.run(run_checks(checks, client, fuzz_rate=args.fuzz_rate))
 
     if args.format == "h1md":
         print(render_h1md(findings))

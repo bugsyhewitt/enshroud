@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, and GraphQL engine fingerprinting.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, and Clairvoyance-style schema reconstruction.
 
 ## Ethical Use
 
@@ -58,10 +58,12 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
                                  field-oracle, mutation-enum, cors, csrf,
-                                 fingerprint, all
+                                 fingerprint, apq, all
+                        Opt-in (not in 'all'): schema-fuzz
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
+--fuzz-rate RPS         schema-fuzz probe rate, req/s (default: 5; <=0 = no limit)
 ```
 
 ### Examples
@@ -141,6 +143,8 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
+| `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
+| `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 
 ### Engine fingerprinting
 
@@ -156,6 +160,34 @@ schema via introspection unless restricted, WPGraphQL exposing the WordPress
 `users` connection, or Apollo's opt-in CSRF prevention — so you can skip generic
 probing and go straight to engine-specific misconfigurations and CVEs. The probe
 queries are side-effect free (no mutations are sent).
+
+### Schema fuzzing (Clairvoyance-style)
+
+The opt-in `schema-fuzz` check reconstructs a GraphQL schema even when
+introspection is disabled, using the same field-suggestion oracle that the v0.1
+`field-oracle` check detects. It probes the endpoint with a bundled wordlist of
+common GraphQL field names (`src/enshroud/data/gql_fields.txt`), sending
+`{ <field> { __typename } }` for each. A field is confirmed when the server
+returns data for it, returns a "must have a selection of subfields" error
+(the field exists but was queried wrong), or echoes a real name back in a
+"Did you mean ..." hint. Confirmed suggestions are themselves re-queued, so the
+check follows the oracle outward from the wordlist.
+
+Because it is slow and noisy, `schema-fuzz` is **not** included in `--checks all`
+and must be requested explicitly. Probing is rate-limited (default 5 req/s,
+tunable via `--fuzz-rate`) and every request flows through the same scope
+validator as the rest of enshroud. The finding rises from LOW to MEDIUM when a
+sensitive/administrative field name (e.g. `adminUsers`, `secretTokens`) is among
+those recovered.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks schema-fuzz --fuzz-rate 3
+```
+
+This is the technique behind
+[Clairvoyance](https://github.com/nikitastupin/clairvoyance); enshroud bundles it
+so you get one tool with H1-markdown output instead of two.
 
 ## Attribution
 

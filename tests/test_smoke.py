@@ -100,3 +100,25 @@ def test_smoke_specific_checks(mock_url, scope_file):
     assert "introspection_enabled" in categories
     # Should NOT include depth_dos, alias_batching, etc.
     assert "depth_dos" not in categories
+
+
+def test_schema_fuzz_is_opt_in_not_in_all():
+    """schema-fuzz is excluded from 'all' but accepted as an explicit check."""
+    from enshroud.cli import OPT_IN_CHECKS, VALID_CHECKS, parse_checks
+
+    assert "schema-fuzz" in OPT_IN_CHECKS
+    assert "schema-fuzz" in VALID_CHECKS
+    # 'all' must not pull in opt-in checks.
+    assert "schema-fuzz" not in parse_checks("all")
+    # But an explicit request is honoured.
+    assert parse_checks("schema-fuzz") == ["schema-fuzz"]
+
+
+def test_fuzz_rate_flag_parses():
+    """--fuzz-rate is exposed and parsed as a float."""
+    from enshroud.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["--target", "http://x/graphql", "--scope-file", "s.txt", "--fuzz-rate", "12.5"]
+    )
+    assert args.fuzz_rate == 12.5

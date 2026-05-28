@@ -33,7 +33,7 @@ enshroud = "enshroud.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"enshroud.data" = ["*.json"]
+"enshroud.data" = ["*.json", "*.txt"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

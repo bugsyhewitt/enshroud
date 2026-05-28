@@ -194,7 +194,9 @@ No existing open-source scanner checks for APQ exposure. graphql-cop does not co
 
 ---
 
-### 6. Schema fuzzing (Clairvoyance-style wordlist rebuild)
+### 6. Schema fuzzing (Clairvoyance-style wordlist rebuild) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 5). Opt-in check `schema-fuzz` (`src/enshroud/checks/schema_fuzz.py`), category `schema_reconstructed`, **excluded from `--checks all`** (slow/noisy). Bundled wordlist at `src/enshroud/data/gql_fields.txt`. Probes `{ <field> { __typename } }`, confirms via data / "selection of subfields" errors / "Did you mean" suggestions, re-queues leaked suggestions (BFS), rate-limited via `--fuzz-rate` (default 5 req/s). Severity LOW, escalates to MEDIUM when a sensitive/admin field name is recovered.
 
 **Severity:** LOW (info disclosure — schema reconstruction when introspection disabled)  
 **Effort:** L (large — async wordlist iteration, tuning for noise/signal)  
@@ -234,6 +236,6 @@ Clairvoyance is the canonical tool. It is Python-based and async but requires a 
 | 3 | `websocket` | `--checks websocket` | HIGH | L | No (opt-in) |
 | 4 | `injection` | `--checks injection` | CRITICAL | M | No (opt-in, active) |
 | 5 | `apq` | `--checks apq` | MEDIUM | S | Yes |
-| 6 | `schema-fuzz` | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
+| 6 | `schema-fuzz` ✅ | `--checks schema-fuzz` | LOW | L | No (opt-in, slow) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

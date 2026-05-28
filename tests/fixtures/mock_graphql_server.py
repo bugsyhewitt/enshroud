@@ -21,6 +21,7 @@ def create_app(
     apq_enabled: bool = False,
     apq_require_auth: bool = False,
     apq_rate_limit: int | None = None,
+    schema_fields: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -36,6 +37,8 @@ def create_app(
         "apq_enabled": apq_enabled,
         "apq_require_auth": apq_require_auth,
         "apq_rate_limit": apq_rate_limit,
+        # Real top-level fields, used by the schema-fuzz oracle simulation.
+        "schema_fields": schema_fields,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -91,6 +94,31 @@ def create_app(
             elif ch == "}":
                 depth -= 1
         return max_depth
+
+    def _closest_field(candidate: str, fields: list[str]) -> str | None:
+        """Return a real field name the oracle would suggest for `candidate`.
+
+        Mirrors how graphql-js emits "Did you mean": a suggestion fires only when
+        the candidate is lexically close to a real field (shared prefix or one
+        being a substring of the other), so unrelated probes get no hint.
+        """
+        cand = candidate.lower()
+        best: str | None = None
+        best_score = 0
+        for f in fields:
+            fl = f.lower()
+            score = 0
+            if fl == cand:
+                continue
+            if fl.startswith(cand) or cand.startswith(fl):
+                score = min(len(fl), len(cand))
+            elif cand in fl or fl in cand:
+                score = min(len(fl), len(cand)) - 1
+            # Require a meaningful overlap (>=3 chars) to avoid noise.
+            if score >= 3 and score > best_score:
+                best_score = score
+                best = f
+        return best
 
     def _count_aliases(query: str) -> int:
         """Count aliased fields (pattern: word: word)."""
@@ -338,6 +366,35 @@ def create_app(
             response = JSONResponse(content={"errors": errors})
             _add_cors(response)
             return response
+
+        # Schema-fuzz oracle simulation: when a known field set is configured,
+        # answer `{ <field> { __typename } }` probes the way a real server with
+        # introspection disabled but field suggestions enabled would.
+        if cfg["schema_fields"] is not None:
+            probe = re.match(
+                r"\s*\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*__typename\s*\}\s*\}\s*$",
+                query,
+            )
+            if probe:
+                field = probe.group(1)
+                real_fields: list[str] = cfg["schema_fields"]
+                if field in real_fields:
+                    # Real field, queried with a selection → return data.
+                    response = JSONResponse(
+                        content={"data": {field: {"__typename": "Object"}}}
+                    )
+                    _add_cors(response)
+                    return response
+                # Unknown field → "cannot query field", with a "Did you mean"
+                # hint if a close-enough real field exists and suggestions are on.
+                msg = f"Cannot query field \"{field}\" on type \"Query\"."
+                if cfg["suggestions_enabled"]:
+                    suggestion = _closest_field(field, real_fields)
+                    if suggestion:
+                        msg += f' Did you mean "{suggestion}"?'
+                response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
 
         # If the query has aliases (e.g. q1: __typename q2: __typename ...),
         # return all of them so alias-batch detection works correctly.
