@@ -175,6 +175,38 @@ schema via introspection unless restricted, WPGraphQL exposing the WordPress
 probing and go straight to engine-specific misconfigurations and CVEs. The probe
 queries are side-effect free (no mutations are sent).
 
+#### Engine-correlated findings
+
+When the `fingerprint` check runs in the same invocation as the vulnerability
+checks (e.g. the default `--checks all`), enshroud correlates each finding
+against the identified engine's catalogued defaults. If a finding reflects a
+documented out-of-the-box behaviour of that engine — for example an
+`introspection_enabled` finding on Graphene, where introspection is on by
+default — the finding gains an `engine_context` block:
+
+```json
+{
+  "category": "introspection_enabled",
+  "severity": "MEDIUM",
+  "engine_context": {
+    "engine_name": "graphene",
+    "engine_display_name": "Graphene (Python)",
+    "confidence": "expected-default",
+    "matched_behaviors": [
+      "Introspection enabled by default, not gated on environment"
+    ],
+    "note": "This finding matches a documented default-insecure behaviour of Graphene (Python), so it reflects the engine's out-of-the-box posture rather than a one-off misconfiguration."
+  }
+}
+```
+
+The `confidence: "expected-default"` marker tells you the detection lines up
+with the engine's known posture (high confidence, low false-positive risk), and
+the H1-markdown report adds an **Engine Correlation** section explaining the
+root cause. Correlation is purely additive: it never changes a finding's
+category or severity, and it is a no-op when `fingerprint` is not run or the
+engine is unrecognised.
+
 ### Schema fuzzing (Clairvoyance-style)
 
 The opt-in `schema-fuzz` check reconstructs a GraphQL schema even when

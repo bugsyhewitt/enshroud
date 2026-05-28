@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from enshroud.client import GraphQLClient
+from enshroud.correlate import correlate_findings
 from enshroud.output import render_h1md, render_json
 from enshroud.scope import get_target_host, load_scope, target_in_scope
 
@@ -171,6 +172,12 @@ async def run_checks(
         if fn:
             result = await fn(client)
             findings.extend(result)
+
+    # Fingerprint-informed correlation: when the engine was identified this
+    # lap, annotate any vulnerability finding that matches a documented
+    # default-insecure behaviour of that engine (POST_V01 direction #2). No-op
+    # if 'fingerprint' was not run or the engine is unrecognised.
+    findings = correlate_findings(findings)
 
     return findings
 
