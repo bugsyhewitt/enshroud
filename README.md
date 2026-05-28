@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, and SQL/NoSQL injection probing.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -24,6 +24,15 @@ git clone https://github.com/bugsyhewitt/enshroud
 cd enshroud
 pip install -e .
 ```
+
+The opt-in `websocket` check requires the optional `websockets` dependency:
+
+```bash
+pip install "enshroud[ws]"
+```
+
+All HTTP-based checks work without it; if `websockets` is absent, the
+`websocket` check simply reports no findings.
 
 ## Scope file format
 
@@ -59,7 +68,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                         Choices: introspection, depth-dos, alias-batch,
                                  field-oracle, mutation-enum, cors, csrf,
                                  fingerprint, apq, all
-                        Opt-in (not in 'all'): schema-fuzz, injection
+                        Opt-in (not in 'all'): schema-fuzz, injection,
+                                 websocket
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
@@ -148,6 +158,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
+| `websocket` _(opt-in)_ | `websocket_unauth_subscription`, `websocket_introspection`, `websocket_no_tls`, `websocket_cswsh` | HIGH | Tests the GraphQL-over-WebSocket subscription transport for unauthenticated handshakes, schema reachability, plaintext `ws://`, and Cross-Site WebSocket Hijacking |
 
 ### Engine fingerprinting
 
@@ -225,6 +236,35 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt \
 The check requires introspection to enumerate arguments; if introspection is
 disabled it produces no findings. Every request flows through the same scope
 validator as the rest of enshroud.
+
+### WebSocket subscription security
+
+GraphQL subscriptions are typically served over WebSocket using one of two
+protocols — `graphql-transport-ws` (the modern graphql-ws library) or the legacy
+`graphql-ws` token (subscriptions-transport-ws). That transport has a security
+model distinct from the HTTP endpoint, and no other open-source CLI scanner
+tests it. The opt-in `websocket` check derives the `ws://`/`wss://` URL from the
+target endpoint, negotiates either protocol, and runs four sub-checks:
+
+| Category | Severity | What it means |
+|---|---|---|
+| `websocket_unauth_subscription` | HIGH | The server returned `connection_ack` to a `connection_init` carrying no credentials — anonymous clients can open subscription channels (BFLA/BOLA exposure). |
+| `websocket_introspection` | MEDIUM | An operation sent over the socket returned data, confirming the subscription transport executes queries and exposes the schema even if the HTTP endpoint locks introspection down. |
+| `websocket_no_tls` | MEDIUM | A plaintext `ws://` handshake succeeded; subscription data and any handshake token travel unencrypted (MITM — cf. CVE-2024-54147). |
+| `websocket_cswsh` | HIGH | The handshake completed with a cross-origin `Origin` header, so the endpoint is open to Cross-Site WebSocket Hijacking — a two-way compromise more powerful than CSRF. |
+
+```bash
+pip install "enshroud[ws]"
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks websocket
+```
+
+The check is **not** included in `--checks all` (it requires a WebSocket
+round-trip and many endpoints serve no subscriptions). It sends a deliberately
+unauthenticated `connection_init` to test the handshake gate; if the server
+requires auth to ack — the secure behaviour — the check produces no findings.
+When the optional `websockets` dependency is not installed, the check reports no
+findings rather than failing.
 
 ## Attribution
 

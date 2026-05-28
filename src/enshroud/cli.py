@@ -27,6 +27,7 @@ ALL_CHECKS = [
 OPT_IN_CHECKS = [
     "schema-fuzz",
     "injection",
+    "websocket",
 ]
 
 VALID_CHECKS = ALL_CHECKS + OPT_IN_CHECKS
@@ -57,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, field-oracle, "
             "mutation-enum, cors, csrf, fingerprint, apq, all. "
-            "Opt-in (not in 'all'): schema-fuzz, injection."
+            "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
     parser.add_argument(
@@ -137,6 +138,7 @@ async def run_checks(
         introspection,
         mutation_enum,
         schema_fuzz,
+        websocket,
     )
 
     # Checks with the uniform (client) -> findings signature.
@@ -150,6 +152,7 @@ async def run_checks(
         "csrf": csrf.check,
         "fingerprint": fingerprint.check,
         "apq": apq.check,
+        "websocket": websocket.check,
     }
 
     findings: list[dict[str, Any]] = []
