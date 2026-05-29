@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -70,8 +70,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
                                  verbose-errors, mutation-enum, cors, csrf,
-                                 cookie-posture, fingerprint, apq, federation,
-                                 all
+                                 cookie-posture, graphql-ide, fingerprint, apq,
+                                 federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -202,6 +202,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
 | `cookie-posture` | `insecure_cookie_posture` | MEDIUM | Session cookies missing `SameSite`/`Secure`/`HttpOnly` (browser-side precondition for CSRF/CSWSH) |
+| `graphql-ide` | `graphql_ide_exposed` | MEDIUM | In-browser GraphQL IDE (GraphiQL / GraphQL Playground / Apollo Sandbox) served over a browser GET — interactive query console + schema exploration left enabled in production |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
@@ -496,6 +497,42 @@ Remediate by setting session cookies with `SameSite=Lax` (or `Strict` where the
 UX allows), `Secure`, and `HttpOnly`; reserve `SameSite=None` for cookies that
 genuinely require cross-site delivery and always pair it with `Secure`. This
 complements — but does not replace — server-side CSRF token validation.
+
+### In-browser GraphQL IDE exposure
+
+The `graphql-ide` check probes whether the endpoint serves an interactive,
+in-browser GraphQL console — **GraphiQL**, **GraphQL Playground**, or Apollo
+**Sandbox / Explorer** — when navigated to like a browser. These tools are
+development conveniences that are routinely left enabled in production.
+
+This is a distinct surface from the `introspection` check. That check sends an
+`application/json` **POST** carrying a `{ __schema }` query and inspects the JSON
+`data`; `graphql-ide` sends a browser-style **GET** with an
+`Accept: text/html` header and inspects the returned **HTML document** for a
+known IDE marker. The two are independent controls: a server can serve the IDE
+(which then enables introspection *inside the victim's browser*) even when the
+raw JSON `__schema` probe is blocked — so disabling introspection alone does not
+close this hole.
+
+A **MEDIUM** `graphql_ide_exposed` finding fires only when the GET returns an
+HTML response (`Content-Type: text/html` or an `<html` body) containing an IDE
+marker. A JSON API reply, a 404, or any non-IDE HTML page produces no finding,
+so a server that correctly serves only the JSON API is reported clean. The probe
+is a single read-only GET — nothing is ever mutated — and is part of the default
+`--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks graphql-ide
+```
+
+An exposed IDE hands an attacker a hosted, point-and-click query/mutation runner
+against the production endpoint plus full schema exploration — a force-multiplier
+for enumerating hidden fields, IDOR candidates, and dangerous mutations.
+Remediate by disabling the console in production (e.g. Apollo Server
+`introspection: false` and disabling the landing page / `graphiql: false`, or
+gating the IDE behind authentication / an internal network) rather than relying
+on disabling introspection alone.
 
 ### Engine fingerprinting
 
