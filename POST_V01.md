@@ -1236,6 +1236,103 @@ single-signal design.
 
 ---
 
+## Phase 2 Rotation 29 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **query-complexity-score**
+check and a **persisted-query-enumeration** check, with instructions to verify
+which (if either) is already shipped and to pick the next-best unshipped gap if
+both overlap or are infeasible. Both were assessed against the *actual* source
+(POST_V01.md is treated as possibly stale) before implementing.
+
+- **query-complexity-score** — **rejected, overlapping.** A generic
+  complexity-score probe re-fires the same "server has no per-request complexity
+  cap" signal that is already covered from three directions: nesting depth is
+  `depth-dos` (`depth_dos`, LOW), alias breadth is `alias-batch`
+  (`alias_batching`, MEDIUM — 100 aliased `__typename` copies accepted), and
+  selection/fragment repetition is `field-dup` (`field_duplication_dos`,
+  MEDIUM — 500 repeated fields / fragment spreads accepted). This is the
+  identical reasoning that rejected R28's `field-count-limit-probe`: a bare
+  complexity/node-count probe is a double-count, not a new class.
+
+### Candidate selected
+
+- **Persisted-query enumeration over an ID-keyed store** — **selected.** The
+  three shipped APQ checks (`apq`, `apq-collision`, `apq-get`) all probe Apollo
+  Automatic Persisted Queries, whose cache is keyed by the **SHA-256 hash of the
+  query text**. A 256-bit hash is not guessable, so those checks cover
+  *registration*, *hash collision* and *GET execution* — never *enumeration*. A
+  separate, widely deployed model (Relay persisted queries,
+  `@apollo/persisted-query-lists` / "trusted documents", Hasura allow-lists, many
+  bespoke gateways) keys the store on a short, client-supplied **document
+  identifier** (`id` / `documentId` / `extensions.persistedQuery.id`) sent with
+  no query body. When that ID space is small and sequential, an unauthenticated
+  attacker can enumerate the entire registered operation set by walking IDs —
+  replaying admin/internal operations whose source they never had. Fully
+  deterministic, read-only (the probe never supplies a query body — it only asks
+  the server to run an already-registered operation by ID), and strictly
+  differential against the three hash-keyed APQ checks: a pure-APQ server returns
+  `PersistedQueryNotFound` / a non-`data` response to every ID probe and yields
+  nothing.
+
+### 22. Persisted-query enumeration over an ID-keyed store ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 29). New check `pq-enum`
+(`src/enshroud/checks/pq_enum.py`), category `persisted_query_id_enumeration`
+(MEDIUM), **included in `--checks all`**. The mock server gains a `pq_id_store`
+flag (default False = safe) that, when True, models a server resolving a
+registered operation from a guessable ID; when False, an ID-only request is
+rejected with `PersistedQueryNotFound`, modelling a server with no ID-keyed
+store.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `pq-enum`
+
+**What it detects:**
+A server that *executes* a registered operation referenced purely by a short,
+guessable document identifier sent with **no** query body. The check probes a
+handful of small IDs (`1`, `2`, `100`) across three transports — top-level
+`{"id": …}`, top-level `{"documentId": …}`, and an `extensions.persistedQuery.id`
+(no `sha256Hash`). The finding fires only on actual execution (200 + top-level
+`data`, not `PersistedQueryNotFound`) and stops at the first confirmed signal.
+
+**Why it's genuinely new:**
+It is the first check to test the **ID-keyed** persisted-query store. The three
+APQ checks key on the unguessable SHA-256 hash and are about registration /
+collision / GET execution; none asks whether an operation is reachable from a
+guessable identifier. `pq-enum` never sends a query body — it only asks the
+server to run an already-registered operation by ID — so it is read-only and
+strictly differential against the APQ checks (a pure-APQ server yields nothing).
+Covered by dedicated regression tests including a hash-keyed-APQ-only server that
+must produce no finding.
+
+**Competitor gap:**
+graphql-cop / graphw00f / clairvoyance do not probe the ID-keyed persisted-query
+store at all — APQ tooling assumes the hash-keyed Apollo model. enshroud now
+reports guessable-ID operation enumeration distinctly from the hash-keyed APQ
+surface.
+
+**References:**
+- Relay persisted queries (operation referenced by `id`)
+- `@apollo/persisted-query-lists` / Apollo "trusted documents"
+- Hasura allow-lists / query collections
+- OWASP GraphQL Cheat Sheet: persisted queries / allow-lists
+
+### Backlog after this rotation
+
+Directions 1–22 plus `verbose-errors`, `graphql-ide`, and `apq-collision` are all
+shipped. No pre-written directions remain; future rotations should continue the
+research-lap pattern. Open ideas not yet implemented and worth considering next:
+GraphQL response-cache poisoning via alias/normalisation (multi-request,
+stateful) and per-event subscription re-authorization over WebSocket
+(timing-dependent, inside the opt-in `websocket` check). Note: subscription
+*flooding* / subscription-dos has been deterministically rejected four times
+(R18, R19, R22, R27) as architecturally incompatible; **batch-query-depth** and
+**field-count-limit-probe** were rejected in R28, and **query-complexity-score**
+in R29, as overlapping the existing depth/alias/field-dup complexity coverage —
+do not re-suggest any of these without a genuinely new, deterministic,
+single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1264,5 +1361,6 @@ single-signal design.
 | 19 | `trace-exposure` ✅ | `--checks trace-exposure` | LOW | S | Yes (shipped, R26) |
 | 20 | `apq-get` ✅ | `--checks apq-get` | MEDIUM | S | Yes (shipped, R27) |
 | 21 | `query-get` ✅ | `--checks query-get` | LOW | S | Yes (shipped, R28) |
+| 22 | `pq-enum` ✅ | `--checks pq-enum` | MEDIUM | S | Yes (shipped, R29) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

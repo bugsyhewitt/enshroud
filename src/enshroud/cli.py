@@ -42,6 +42,7 @@ ALL_CHECKS = [
     "apq",
     "apq-collision",
     "apq-get",
+    "pq-enum",
     "trace-exposure",
     "federation",
 ]
@@ -85,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
-            "apq-collision, apq-get, trace-exposure, federation, all. "
+            "apq-collision, apq-get, pq-enum, trace-exposure, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -192,6 +193,7 @@ async def run_checks(
         introspection,
         introspection_bypass,
         mutation_enum,
+        pq_enum,
         query_get,
         schema_fuzz,
         trace_exposure,
@@ -224,6 +226,7 @@ async def run_checks(
         "apq": apq.check,
         "apq-collision": apq_collision.check,
         "apq-get": apq_get.check,
+        "pq-enum": pq_enum.check,
         "trace-exposure": trace_exposure.check,
         "federation": federation.check,
         "websocket": websocket.check,
