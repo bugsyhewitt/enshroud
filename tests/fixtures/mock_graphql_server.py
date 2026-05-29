@@ -61,6 +61,7 @@ def create_app(
     alias_auth_bypass: dict[str, Any] | None = None,
     incremental_delivery: bool = False,
     graphql_ide: str | None = None,
+    introspection_filter: str | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -156,6 +157,22 @@ def create_app(
         # production-IDE-left-enabled misconfiguration. When None (default) the
         # GET endpoint only ever returns the JSON API, so the check stays silent.
         "graphql_ide": graphql_ide,
+        # Naive introspection-filter modelling, used by the introspection-bypass
+        # check. `introspection_enabled` is the spec-correct switch (when False
+        # *all* introspection is blocked uniformly). `introspection_filter`
+        # instead models a *broken* block that leaks via an alternate technique:
+        #   * "schema_keyword" — the server string-matches the literal
+        #     "__schema" token and rejects it, but never inspects `__type`, so a
+        #     `__type(name: "Query")` POST query still returns schema data. The
+        #     classic deny-list-by-substring bug.
+        #   * "post_only" — the server blocks introspection on the POST/JSON
+        #     transport but the same `__schema` query succeeds over GET (the
+        #     control was wired into one route handler only).
+        # When set, `introspection_enabled` is treated as False for the standard
+        # POST `__schema` probe (so the existing `introspection` check stays
+        # silent) while the modelled alternate technique leaks. When None
+        # (default) introspection behaves per `introspection_enabled`.
+        "introspection_filter": introspection_filter,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -348,6 +365,21 @@ def create_app(
             return response
 
         query = request.query_params.get("query", "")
+
+        # ── Introspection over GET (introspection-bypass vector: post_only) ──
+        # Some servers wire the introspection block into the POST route handler
+        # only, leaving the GET transport able to answer the same `__schema`
+        # query. Model that here: when the filter is "post_only", a `__schema`
+        # GET succeeds even though the POST equivalent is blocked below.
+        get_is_introspection = (
+            "__schema" in query or bool(re.search(r"__type\b(?!name)", query))
+        )
+        if get_is_introspection and cfg["introspection_filter"] == "post_only":
+            resp_data = _build_introspection_response(cfg["dangerous_mutations"])
+            response = JSONResponse(content=resp_data)
+            _add_cors(response)
+            return response
+
         is_mutation = query.lstrip().startswith("mutation")
         if is_mutation and not cfg["accept_get_query"]:
             # Reject mutations over GET (CSRF-safe behavior).
@@ -827,6 +859,47 @@ def create_app(
         )
 
         if is_introspection:
+            # ── Naive-filter modelling (introspection-bypass) ───────────────
+            # A broken introspection block that leaks via an alternate probe.
+            filt = cfg["introspection_filter"]
+            if filt == "schema_keyword":
+                # Server string-matches the literal "__schema" token only. A
+                # `__schema` query is rejected; a `__type(name: ...)` query —
+                # which never contains "__schema" — slips through and returns
+                # schema data.
+                if "__schema" in query:
+                    response = JSONResponse(
+                        content={
+                            "errors": [{"message": "Introspection is disabled"}]
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+                # __type probe — leak a minimal type result.
+                response = JSONResponse(
+                    content={
+                        "data": {
+                            "__type": {
+                                "name": "Query",
+                                "kind": "OBJECT",
+                                "fields": [{"name": "__typename"}],
+                            }
+                        }
+                    }
+                )
+                _add_cors(response)
+                return response
+            if filt == "post_only":
+                # Introspection is blocked on the POST transport (it succeeds
+                # over GET, handled in the GET route above).
+                response = JSONResponse(
+                    content={
+                        "errors": [{"message": "Introspection is disabled"}]
+                    }
+                )
+                _add_cors(response)
+                return response
+
             if not cfg["introspection_enabled"]:
                 response = JSONResponse(
                     content={

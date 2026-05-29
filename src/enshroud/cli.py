@@ -19,6 +19,7 @@ from enshroud.severity import (
 
 ALL_CHECKS = [
     "introspection",
+    "introspection-bypass",
     "depth-dos",
     "alias-batch",
     "batch-array",
@@ -74,7 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CHECK",
         help=(
             "Comma-separated checks to run (default: all). "
-            "Choices: introspection, depth-dos, alias-batch, batch-array, "
+            "Choices: introspection, introspection-bypass, depth-dos, "
+            "alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
             "csrf-multipart, cookie-posture, graphql-ide, fingerprint, apq, "
@@ -180,6 +182,7 @@ async def run_checks(
         graphql_ide,
         injection,
         introspection,
+        introspection_bypass,
         mutation_enum,
         schema_fuzz,
         websocket,
@@ -188,6 +191,7 @@ async def run_checks(
     # Checks with the uniform (client) -> findings signature.
     check_map = {
         "introspection": introspection.check,
+        "introspection-bypass": introspection_bypass.check,
         "depth-dos": depth_dos.check,
         "alias-batch": alias_batch.check,
         "batch-array": batch_array.check,
