@@ -224,5 +224,48 @@ async def test_time_based_only_when_active():
         assert len(active) == 1
         assert active[0]["category"] == "sql_injection_signal"
         assert "time-based" in active[0]["dbms"]
+        # Evidence now records the zero-delay control measurement alongside the
+        # clean baseline and the slow payload, proving the delay is controllable.
+        assert "control(pg_sleep(0))" in active[0]["evidence"]
+        assert "delta vs control" in active[0]["evidence"]
     finally:
         server.should_exit = True
+
+
+@pytest.mark.asyncio
+async def test_time_based_no_false_positive_on_uniformly_slow_endpoint():
+    # The endpoint is slow for EVERY request (busy backend / tarpit), but the
+    # delay is not payload-controlled: pg_sleep(0) is just as slow as pg_sleep(3).
+    # A correct check must compare the slow payload against the zero-delay control
+    # and suppress the finding — otherwise it fires a CRITICAL false positive.
+    app = create_app(
+        introspection_enabled=True,
+        injectable_arg={
+            "field": "searchUsers",
+            "arg": "filter",
+            "dbms_error": None,
+            # No "time_based": the endpoint does not honour the requested sleep.
+            "uniform_delay": 3.0,
+        },
+    )
+    url, server, _ = _start_server(app)
+    try:
+        client = GraphQLClient(url, timeout=15)
+        findings = await injection.check(client, active=True)
+        # Slow payload ≈ control ≈ baseline (all uniformly ~3s) → no signal.
+        assert findings == []
+    finally:
+        server.should_exit = True
+
+
+def test_time_finding_records_control_in_evidence():
+    # Unit test of the finding builder: the control measurement and both deltas
+    # must be present so a hunter can see the differential that justified firing.
+    target = {"operation": "query", "field": "search", "arg": "term", "scalar": "String"}
+    f = injection._time_finding(target, baseline=0.10, slow=3.30, control=0.20)
+    assert f["category"] == "sql_injection_signal"
+    assert f["severity"] == "CRITICAL"
+    assert "baseline=0.10s" in f["evidence"]
+    assert "control(pg_sleep(0))=0.20s" in f["evidence"]
+    assert "delta vs control 3.10s" in f["evidence"]
+    assert "delta vs baseline 3.20s" in f["evidence"]

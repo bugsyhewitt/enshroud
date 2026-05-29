@@ -56,9 +56,19 @@ _ERROR_PAYLOADS: list[str] = [
 # response-time delta versus a clean baseline request.
 _TIME_PAYLOAD = "1'; SELECT pg_sleep(3)--"
 _TIME_DELAY_SECONDS = 3.0
+# A zero-delay control payload structurally identical to _TIME_PAYLOAD but asking
+# the database to sleep for 0 seconds. A truly injectable argument responds fast
+# to this and slow to _TIME_PAYLOAD; an endpoint that is simply slow for *every*
+# request responds slow to both. Comparing the two payloads against each other
+# (not just against a clean baseline) is what rules out the false positive.
+_TIME_CONTROL_PAYLOAD = "1'; SELECT pg_sleep(0)--"
 # Require the slow response to exceed the baseline by at least this margin before
 # we call it a time-based signal, to absorb jitter.
 _TIME_MARGIN_SECONDS = 2.0
+# The slow payload must also beat the zero-delay control by at least this margin.
+# This is the differential that proves the delay is payload-controlled rather
+# than an endpoint that is uniformly slow (busy backend, tarpit, network jitter).
+_TIME_CONTROL_MARGIN_SECONDS = 2.0
 
 # Known DBMS error fingerprints (regex, case-insensitive). Drawn from sqlmap's
 # error-detection corpus, trimmed to the highest-signal patterns per engine.
@@ -256,7 +266,12 @@ def _error_finding(target: dict[str, str], payload: str, dbms: str, evidence: st
     }
 
 
-def _time_finding(target: dict[str, str], baseline: float, slow: float) -> dict[str, Any]:
+def _time_finding(
+    target: dict[str, str],
+    baseline: float,
+    slow: float,
+    control: float,
+) -> dict[str, Any]:
     return {
         "category": "sql_injection_signal",
         "severity": "CRITICAL",
@@ -270,14 +285,20 @@ def _time_finding(target: dict[str, str], baseline: float, slow: float) -> dict[
         "payload": _TIME_PAYLOAD,
         "dbms": "unknown (time-based)",
         "evidence": (
-            f"baseline={baseline:.2f}s, payload_response={slow:.2f}s "
-            f"(delta {slow - baseline:.2f}s, expected ~{_TIME_DELAY_SECONDS:.0f}s)"
+            f"baseline={baseline:.2f}s, control(pg_sleep(0))={control:.2f}s, "
+            f"payload(pg_sleep({_TIME_DELAY_SECONDS:.0f}))={slow:.2f}s "
+            f"(delta vs baseline {slow - baseline:.2f}s, "
+            f"delta vs control {slow - control:.2f}s, "
+            f"expected ~{_TIME_DELAY_SECONDS:.0f}s)"
         ),
         "description": (
             f"Injecting a time-delay payload into the `{target['arg']}` argument "
             f"of {target['operation']} `{target['field']}` made the response "
-            f"take {slow:.2f}s versus a {baseline:.2f}s baseline. A controllable "
-            "response delay indicates blind SQL injection."
+            f"take {slow:.2f}s, versus a {baseline:.2f}s clean baseline and a "
+            f"{control:.2f}s zero-delay control (an identical payload asking the "
+            "database to sleep for 0 seconds). The delay tracking the requested "
+            "sleep duration — not a uniformly slow endpoint — indicates blind "
+            "SQL injection."
         ),
         "reproduction": (
             "Compare response times between a clean request and: "
@@ -347,12 +368,24 @@ async def check(
         # ── time-based probing (opt-in via --active) ───────────────────────
         if active:
             clean = build_probe_query(target, "1")
-            base_text, baseline = await _send(client, clean)
-            slow_text, slow = await _send(
+            _base_text, baseline = await _send(client, clean)
+            # Zero-delay control: structurally identical sleep payload asking for
+            # 0 seconds. Used to prove the delay is payload-controlled.
+            _ctrl_text, control = await _send(
+                client, build_probe_query(target, _TIME_CONTROL_PAYLOAD)
+            )
+            _slow_text, slow = await _send(
                 client, build_probe_query(target, _TIME_PAYLOAD)
             )
-            if slow - baseline >= _TIME_MARGIN_SECONDS:
-                findings.append(_time_finding(target, baseline, slow))
+            # Two gates must BOTH pass: the slow payload must beat (a) the clean
+            # baseline and (b) the zero-delay control by the configured margins.
+            # The control gate is what suppresses a uniformly-slow endpoint:
+            # if the 0-second sleep is just as slow as the 3-second one, the delay
+            # is not attacker-controlled and we do not fire.
+            beats_baseline = slow - baseline >= _TIME_MARGIN_SECONDS
+            beats_control = slow - control >= _TIME_CONTROL_MARGIN_SECONDS
+            if beats_baseline and beats_control:
+                findings.append(_time_finding(target, baseline, slow, control))
                 fired.add(key)
 
     return findings
