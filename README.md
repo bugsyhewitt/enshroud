@@ -66,10 +66,10 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
-                                 batch-array, field-dup, directive-abuse,
-                                 field-oracle, mutation-enum, cors, csrf,
-                                 cookie-posture, fingerprint, apq,
-                                 federation, all
+                                 batch-array, field-dup, fragment-cycle,
+                                 directive-abuse, field-oracle, verbose-errors,
+                                 mutation-enum, cors, csrf, cookie-posture,
+                                 fingerprint, apq, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -193,6 +193,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
 | `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
+| `verbose-errors` | `verbose_error_disclosure` | LOW–MEDIUM | Development/debug error mode leaking stack traces, source paths, exception classes, SQL, internal hosts, or framework versions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
@@ -439,6 +440,41 @@ the H1-markdown report adds an **Engine Correlation** section explaining the
 root cause. Correlation is purely additive: it never changes a finding's
 category or severity, and it is a no-op when `fingerprint` is not run or the
 engine is unrecognised.
+
+### Verbose / development-mode error disclosure
+
+The `verbose-errors` check detects a GraphQL engine that is running in a
+development/debug error mode in production. It sends a single deliberately
+malformed query (an unbalanced selection set) to force the server down its
+error-formatting path, then scans the structured error objects — both
+`errors[].message` and `errors[].extensions` — for leaked internals:
+
+- **stack traces** (Node `at fn (file:line:col)`, Python tracebacks, Ruby/Go frames),
+- **absolute source file paths** (`/srv/app/resolvers/user.js`, Windows paths),
+- **exception / error class names** (`KeyError`, `java.lang.NullPointerException`),
+- **raw SQL** surfacing through an ORM (`SELECT ... FROM ...`, `SQLSTATE[...]`),
+- **internal hosts / private IPs / DB connection strings** (`postgres://...@10.0.4.12`),
+- **framework version strings** (`graphql-core 3.2.3`),
+- a populated `extensions.stacktrace` / `extensions.exception` object (Apollo /
+  graphql-js debug mode).
+
+This is distinct from `fingerprint` (which matches error *wording* to identify
+the engine) and `field-oracle` (which extracts "Did you mean" field-name
+suggestions). `verbose-errors` flags the leakage of *implementation detail*
+itself — library versions to pivot to known CVEs, file paths for
+source-disclosure / traversal targets, SQL confirming injection, and internal
+hostnames for lateral movement. Severity is **MEDIUM** when a stack trace,
+source path, SQL, internal host, or debug extension is present, and **LOW** when
+only a framework version leaks. The check is part of `--checks all` (it is
+read-only and side-effect free) and stays silent against servers that return
+clean, normalised errors.
+
+```bash
+enshroud \
+  --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks verbose-errors
+```
 
 ### Apollo Federation exposure
 

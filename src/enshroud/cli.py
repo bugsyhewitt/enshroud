@@ -26,6 +26,7 @@ ALL_CHECKS = [
     "fragment-cycle",
     "directive-abuse",
     "field-oracle",
+    "verbose-errors",
     "mutation-enum",
     "cors",
     "csrf",
@@ -71,8 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, field-oracle, "
-            "mutation-enum, cors, csrf, cookie-posture, fingerprint, apq, "
-            "federation, all. "
+            "verbose-errors, mutation-enum, cors, csrf, cookie-posture, "
+            "fingerprint, apq, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -160,6 +161,7 @@ async def run_checks(
         cookie_posture,
         cors,
         csrf,
+        debug_errors,
         depth_dos,
         directive_abuse,
         federation,
@@ -184,6 +186,7 @@ async def run_checks(
         "fragment-cycle": fragment_cycle.check,
         "directive-abuse": directive_abuse.check,
         "field-oracle": field_oracle.check,
+        "verbose-errors": debug_errors.check,
         "mutation-enum": mutation_enum.check,
         "cors": cors.check,
         "csrf": csrf.check,
