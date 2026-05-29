@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, APQ cache poisoning via unverified query hashes, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, APQ cache poisoning via unverified query hashes, APQ execution over cacheable GET requests, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -73,7 +73,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  verbose-errors, mutation-enum, cors, csrf,
                                  csrf-multipart, cookie-posture, graphql-ide,
                                  fingerprint, apq, apq-collision,
-                                 trace-exposure, federation, all
+                                 apq-get, trace-exposure, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -211,6 +211,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `apq-collision` | `apq_hash_mismatch` | MEDIUM–HIGH | APQ cache poisoning: server stores a registration whose `query` does not hash to the supplied `sha256Hash` (missing `PersistedQueryHashMismatch` integrity check) |
+| `apq-get` | `apq_execution_over_get` | MEDIUM | APQ persisted query executes over a cacheable `GET` (`?extensions={persistedQuery:…}`) — a cross-site / cache-flooding transport the POST-only CSRF guard never covers |
 | `trace-exposure` | `trace_exposure` | LOW | Apollo Tracing (`extensions.tracing`) or Federation FTV1 (`extensions.ftv1`) performance metadata exposed on the success path — leaks per-resolver timings and schema type/field names to arbitrary clients |
 | `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
@@ -818,6 +819,42 @@ gate registration behind authentication.
 enshroud --target https://api.example.com/graphql \
   --scope-file scope.txt \
   --checks apq-collision
+```
+
+### APQ execution over a cacheable GET
+
+The `apq-get` check tests the transport that is the entire point of Automatic
+Persisted Queries — the **cacheable hash-only GET** — which neither `apq` nor
+`apq-collision` probes (both are POST-only). APQ lets a client replay a
+registered operation by sending only its SHA-256 hash, and because the hash fits
+in a URL the canonical optimisation is `GET
+/graphql?extensions={"persistedQuery":{"version":1,"sha256Hash":"…"}}` with a
+CDN-cacheable response. That GET path is a security boundary the POST checks
+never see:
+
+- **Cacheable CSRF.** A `GET` is a CORS simple request, trivially triggerable
+  cross-site (`<img>`/`<script>`/link prefetch). If a registered mutation — or a
+  query returning per-user data — executes over GET, an attacker drives it from a
+  victim's browser, reintroducing the surface the `csrf` check guards on the
+  POST/JSON path. The hash makes the payload a fixed, shareable URL.
+- **Cache-flooding / poisoning storm.** Because the response is designed to be
+  cacheable and keyed by the persisted-query hash, an attacker who can register
+  (see `apq` / `apq-collision`) or predict hashes can flood or poison a shared
+  cache with persisted-operation responses.
+
+enshroud first confirms APQ is enabled (a hash-only POST lookup returns
+`PersistedQueryNotFound`), registers a benign `{ __typename }` so a known hash
+exists, then replays that hash over a GET. It fires a **MEDIUM**
+`apq_execution_over_get` finding **only** when the GET returns `data` (the
+persisted operation executed over GET). A server that honours APQ over POST but
+returns `PersistedQueryNotFound` over GET is the secure default and produces no
+finding. The probe query is side-effect-free, so the check proves the *transport*
+is open without executing anything sensitive.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks apq-get
 ```
 
 ### Performance-tracing exposure (Apollo Tracing / FTV1)
