@@ -39,6 +39,7 @@ ALL_CHECKS = [
     "graphql-ide",
     "fingerprint",
     "apq",
+    "apq-collision",
     "federation",
 ]
 
@@ -81,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
             "csrf-multipart, cookie-posture, graphql-ide, fingerprint, apq, "
-            "federation, all. "
+            "apq-collision, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -165,6 +166,7 @@ async def run_checks(
     from enshroud.checks import (
         alias_batch,
         apq,
+        apq_collision,
         auth_alias,
         batch_array,
         cookie_posture,
@@ -213,6 +215,7 @@ async def run_checks(
         "graphql-ide": graphql_ide.check,
         "fingerprint": fingerprint.check,
         "apq": apq.check,
+        "apq-collision": apq_collision.check,
         "federation": federation.check,
         "websocket": websocket.check,
     }
