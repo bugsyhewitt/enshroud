@@ -1454,6 +1454,110 @@ single-signal design.
 
 ---
 
+## Phase 2 Rotation 31 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **schema-directive-bypass**
+check and a **cost-limit-probe** check, with instructions to verify which (if
+either) is already shipped and to pick the next-best gap if both are infeasible
+or overlap.
+
+- **cost-limit-probe** — **rejected, overlapping.** A bare cost / complexity
+  probe re-fires the same "server has no per-request complexity cap" signal that
+  is already covered from four directions: nesting depth (`depth-dos`), enforced-
+  depth bypass (`depth-bypass`), alias breadth (`alias-batch`), and selection /
+  fragment repetition (`field-dup`). This is the identical reasoning that
+  rejected R28's `field-count-limit-probe` and R29's `query-complexity-score`:
+  another cost / complexity probe would be a double-count, not a new class.
+
+- **schema-directive-bypass** — **rejected as framed, redesigned and selected.**
+  The literal framing (test whether `@deprecated` fields are still queryable)
+  does not survive scrutiny: a spec-compliant server *always* resolves a
+  deprecated field — that is the definition of `@deprecated`. Reporting it as
+  a finding would be noise that trains hunters to ignore enshroud output.
+  The redesigned, defensible vector that *does* survive — **enforcement of the
+  two universally-supported built-in directives `@skip` / `@include`** — is
+  genuinely new and fits the architecture cleanly. A server that *returns* a
+  field whose selection carried `@skip(if: true)` (or `@include(if: false)`)
+  has a broken executor-layer directive-evaluation pass, which is the *same*
+  evaluation pass every custom schema directive (`@auth`, `@cost`,
+  `@cacheControl`, vendor authorization directives) layers on.
+
+### 24. Built-in directive enforcement bypass (`@skip` / `@include`) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 31). New check `directive-enforcement`
+(`src/enshroud/checks/directive_enforcement.py`), category
+`directive_enforcement_bypass` (MEDIUM), **included in `--checks all`**. Uses
+the existing `GraphQLClient.query` POST transport — no new client method. The
+mock server gains a `directive_enforcement_bypass` flag (default False =
+spec-correct) that, when True, models a broken executor returning the gated
+alias.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `directive-enforcement`
+
+**What it detects:**
+A server whose executor does *not* honour `@skip(if: true)` /
+`@include(if: false)` on a field's selection — i.e. returns the gated field
+anyway. Two read-only `__typename`-anchored probes pack an unconditional
+`enshroudKeep` alias with a directive-gated `enshroudDrop` alias:
+
+```
+{ enshroudKeep: __typename enshroudDrop: __typename @skip(if: true) }
+{ enshroudKeep: __typename enshroudDrop: __typename @include(if: false) }
+```
+
+A spec-compliant executor returns only `enshroudKeep`. A finding fires per
+probe when the server also returns `enshroudDrop` — proof that the directive-
+evaluation stage was not run (or was bypassed) before resolution. Strictly
+differential: an errored response, a missing keep-anchor, or a null/absent
+drop-key all produce no finding.
+
+**Why it's genuinely new:**
+It is the first check to test executor-layer *enforcement* of the built-in
+directives. `directive-abuse` (POST_V01 #9) probes *validation* of the
+directive layer — it stacks the non-repeatable `@skip` directive 500× and
+sends an *undefined* directive, looking for validation / complexity errors —
+never asking whether a single legal directive is *honoured*. `defer-abuse`
+(POST_V01 #14) probes the incremental-delivery directives. The
+`@skip` / `@include` enforcement axis was uncovered.
+
+**Why this is high-signal beyond the immediate bug:**
+Schema-directive enforcement (`@auth`, `@requireRole`, `@cost`,
+`@cacheControl`, `@rateLimit`, vendor authorization directives) reuses the
+*same* directive-resolution hook the built-ins use. A server that ignores
+`@skip` / `@include` is almost certainly ignoring every custom directive
+layered on top of it — making this MEDIUM-severity finding an authoritative
+signal that the operator's directive-based authorization story is broken.
+
+**Competitor gap:**
+graphql-cop / graphw00f / Clairvoyance do not probe built-in directive
+enforcement. enshroud now ships automated detection of `@skip` / `@include`
+enforcement bypass in the H1-markdown / JSON pipeline.
+
+**References:**
+- GraphQL Spec §3.13: built-in directives (`@skip`, `@include`)
+- OWASP GraphQL Cheat Sheet: "Authorization" (enforce in resolvers / via
+  directives the executor evaluates on the resolved field)
+- Apollo Server custom-directive docs (custom schema directives layer on the
+  same directive-resolution hook the built-ins use)
+
+### Backlog after this rotation
+
+Directions 1–24 plus `verbose-errors`, `graphql-ide`, and `apq-collision` are
+all shipped. **schema-introspection-diff** is permanently rejected as
+architecturally incompatible (stateless scanner). Open ideas not yet
+implemented and worth considering next: GraphQL response-cache poisoning via
+alias/normalisation (multi-request, stateful) and per-event subscription
+re-authorization over WebSocket (timing-dependent, inside the opt-in
+`websocket` check). Note: subscription *flooding* / subscription-dos has been
+deterministically rejected four times (R18, R19, R22, R27) as architecturally
+incompatible; **batch-query-depth** and **field-count-limit-probe** were
+rejected in R28, **query-complexity-score** in R29, **schema-introspection-
+diff** in R30, and **cost-limit-probe** in R31 as overlapping existing
+coverage or architecturally incompatible — do not re-suggest any of these
+without a genuinely new, deterministic, single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1484,5 +1588,6 @@ single-signal design.
 | 21 | `query-get` ✅ | `--checks query-get` | LOW | S | Yes (shipped, R28) |
 | 22 | `pq-enum` ✅ | `--checks pq-enum` | MEDIUM | S | Yes (shipped, R29) |
 | 23 | `mutation-allowlist-bypass` ✅ | `--checks mutation-allowlist-bypass` | HIGH | S | Yes (shipped, R30) |
+| 24 | `directive-enforcement` ✅ | `--checks directive-enforcement` | MEDIUM | S | Yes (shipped, R31) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

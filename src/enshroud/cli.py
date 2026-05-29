@@ -27,6 +27,7 @@ ALL_CHECKS = [
     "field-dup",
     "fragment-cycle",
     "directive-abuse",
+    "directive-enforcement",
     "defer-abuse",
     "field-oracle",
     "auth-alias",
@@ -84,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, introspection-bypass, depth-dos, "
             "depth-bypass, alias-batch, batch-array, "
-            "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
+            "field-dup, fragment-cycle, directive-abuse, "
+            "directive-enforcement, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, "
             "mutation-allowlist-bypass, cors, csrf, "
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
@@ -185,6 +187,7 @@ async def run_checks(
         depth_bypass,
         depth_dos,
         directive_abuse,
+        directive_enforcement,
         federation,
         field_dup,
         field_oracle,
@@ -214,6 +217,7 @@ async def run_checks(
         "field-dup": field_dup.check,
         "fragment-cycle": fragment_cycle.check,
         "directive-abuse": directive_abuse.check,
+        "directive-enforcement": directive_enforcement.check,
         "defer-abuse": defer_abuse.check,
         "field-oracle": field_oracle.check,
         "auth-alias": auth_alias.check,

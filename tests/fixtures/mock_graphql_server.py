@@ -71,6 +71,7 @@ def create_app(
     tracing: str | None = None,
     mutation_arg_signature: dict[str, list[dict[str, Any]]] | None = None,
     op_type_confusion: bool = False,
+    directive_enforcement_bypass: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -267,6 +268,13 @@ def create_app(
         # False, the same request is rejected with a "Cannot query field on
         # type Query" validation error — the spec-correct outcome.
         "op_type_confusion": op_type_confusion,
+        # Built-in directive enforcement, used by the directive-enforcement check.
+        # When False (default, spec-correct) the server honours
+        # `@skip(if: true)` / `@include(if: false)` on a field's selection by
+        # omitting that field from the response. When True the server ignores
+        # the directives and returns the gated field anyway, modelling a broken
+        # executor whose directive-evaluation stage is skipped before resolution.
+        "directive_enforcement_bypass": directive_enforcement_bypass,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -1349,6 +1357,31 @@ def create_app(
                     if suggestion:
                         msg += f' Did you mean "{suggestion}"?'
                 response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
+
+        # ── Directive-enforcement probes (directive-enforcement check) ──────
+        # The check sends two probes of shape:
+        #   { enshroudKeep: __typename enshroudDrop: __typename @skip(if: true) }
+        #   { enshroudKeep: __typename enshroudDrop: __typename @include(if: false) }
+        # A spec-compliant executor (the default) returns only `enshroudKeep`;
+        # a server whose directive-evaluation pass is broken / skipped returns
+        # both keys. Handled before the generic alias matcher below, which
+        # would otherwise blindly echo both aliases regardless of the
+        # directive-enforcement flag and trip the check on every server.
+        if "enshroudKeep" in query and "enshroudDrop" in query:
+            has_skip_true = bool(
+                re.search(r"@skip\s*\(\s*if\s*:\s*true\s*\)", query)
+            )
+            has_include_false = bool(
+                re.search(r"@include\s*\(\s*if\s*:\s*false\s*\)", query)
+            )
+            if has_skip_true or has_include_false:
+                data: dict[str, str] = {"enshroudKeep": "Query"}
+                if cfg["directive_enforcement_bypass"]:
+                    # Broken executor: returns the gated field anyway.
+                    data["enshroudDrop"] = "Query"
+                response = JSONResponse(content={"data": data})
                 _add_cors(response)
                 return response
 
