@@ -32,6 +32,7 @@ def create_app(
     federation_entities: bool = False,
     fragment_cycle_validation: bool = False,
     alias_auth_bypass: dict[str, Any] | None = None,
+    incremental_delivery: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -104,6 +105,15 @@ def create_app(
         # field is requested under a *different* alias — the bypass. When None
         # (default) no field is protected and the check stays silent.
         "alias_auth_bypass": alias_auth_bypass,
+        # Incremental-delivery (@defer / @stream) exposure, used by the
+        # defer-abuse check. When True the server behaves like an engine with
+        # incremental delivery *enabled*: it accepts an inline fragment carrying
+        # @defer ({ ... @defer { __typename } }) and accepts @stream, returning
+        # data with no directive error. When False (default) it behaves like a
+        # spec-compliant / feature-disabled server: it rejects @defer as an
+        # "Unknown directive" and rejects @stream as a directive-location
+        # violation ("@stream may not be used on this field").
+        "incremental_delivery": incremental_delivery,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -552,6 +562,34 @@ def create_app(
             response = JSONResponse(
                 content={"data": {response_key: {"__typename": "Object"}}}
             )
+            _add_cors(response)
+            return response
+
+        # ── Incremental-delivery (@defer / @stream) probes ──────────────────
+        # The defer-abuse check sends two probes:
+        #   1. @defer on an inline fragment: { ... @defer { __typename } }
+        #   2. @stream on a non-list field:  { __typename @stream }
+        # A server with incremental delivery enabled accepts both (returns
+        # data); a spec-compliant / feature-disabled server rejects @defer as an
+        # unknown directive and @stream as a directive-location violation.
+        has_defer = "@defer" in query
+        has_stream = "@stream" in query
+        if has_defer or has_stream:
+            if cfg["incremental_delivery"]:
+                # Feature enabled — accept the probe and return data. (Real
+                # servers stream a multipart response; for detection purposes a
+                # non-error data response is the accept signal.)
+                response = JSONResponse(content={"data": {"__typename": "Query"}})
+                _add_cors(response)
+                return response
+            # Feature disabled / spec-compliant validator — reject the probe.
+            if has_defer:
+                msg = 'Unknown directive "@defer".'
+            else:
+                msg = (
+                    'Directive "@stream" may not be used on a non-list field.'
+                )
+            response = JSONResponse(content={"errors": [{"message": msg}]})
             _add_cors(response)
             return response
 

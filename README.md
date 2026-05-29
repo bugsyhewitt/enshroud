@@ -67,7 +67,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
                                  batch-array, field-dup, fragment-cycle,
-                                 directive-abuse, field-oracle, auth-alias,
+                                 directive-abuse, defer-abuse, field-oracle,
+                                 auth-alias,
                                  verbose-errors, mutation-enum, cors, csrf,
                                  cookie-posture, fingerprint, apq, federation,
                                  all
@@ -193,6 +194,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
 | `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
 | `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
+| `defer-abuse` | `incremental_delivery_dos` | MEDIUM | Incremental delivery (`@defer`/`@stream`) exposed — connection-holding DoS amplification and deferred-payload authorization staleness |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `auth-alias` | `authz_bypass_via_alias` | HIGH | Field denied by name resolves when aliased — authorization keyed on field name / response key instead of the resolved field |
 | `verbose-errors` | `verbose_error_disclosure` | LOW–MEDIUM | Development/debug error mode leaking stack traces, source paths, exception classes, SQL, internal hosts, or framework versions |
@@ -358,6 +360,54 @@ rejected when repeated and unknown directives are rejected outright, ensure
 directive processing happens after validation, disable directive/field
 suggestion hints in production, and count directive occurrences toward the query
 complexity budget.
+
+### Incremental delivery abuse (`@defer` / `@stream`)
+
+The `defer-abuse` check probes GraphQL's incremental-delivery directives —
+`@defer` (on fragments) and `@stream` (on list fields) — which let a server
+return a single query's results across **multiple** payloads over one long-lived
+`multipart/mixed` response. This is a distinct attack surface from every other
+check: where the DoS axes amplify *compute* (depth, alias breadth, field
+repetition, fragment recursion), incremental delivery amplifies *connection
+holding* — each deferred fragment or streamed item forces the server to keep a
+streaming response open and frame an additional payload.
+
+It sends two read-only probes, both anchored on `__typename` (no schema
+knowledge required):
+
+1. **`@defer`** — an inline fragment carrying the directive:
+   `{ ... @defer { __typename } }` (a fragment is the only legal `@defer`
+   location). A server with incremental delivery disabled rejects this as an
+   unknown directive.
+2. **`@stream`** — applied to a non-list field: `{ __typename @stream }`.
+   `@stream` is only valid on a list field, so a spec-compliant validator
+   rejects this as a directive-location violation; a server that accepts it has
+   weak validation around its streaming layer.
+
+A finding fires (**MEDIUM**) when the server **accepts** either probe — i.e. it
+does not return an unknown-directive / directive-location / disabled error. The
+`accepted_vectors` field lists which vectors (`defer`, `stream`) were accepted. A
+server that has simply never enabled incremental delivery rejects both probes and
+produces **no** finding, so there is no false positive on feature-disabled
+servers. Nothing is mutated — every selection is the `__typename` meta-field — so
+the check is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks defer-abuse
+```
+
+Real-world impact: an attacker stacks many `@defer` fragments (or `@stream`s a
+large list) in one small request to hold connections/workers open and multiply
+the number of response parts the server must frame and flush — a documented
+incremental-delivery resource-amplification class (fixed in Apollo Router and
+graphql-js incremental-delivery implementations). Servers that authorize once at
+operation start, rather than per deferred payload, can additionally leak data
+whose authorization context changed before the deferred part resolved. To
+remediate, disable `@defer`/`@stream` if unused; otherwise enforce strict
+directive-location validation, cap the number of deferred fragments / streamed
+items per operation in the complexity budget, bound how long a streaming response
+may stay open, and re-evaluate authorization for each deferred payload.
 
 ### Authorization bypass via field aliasing
 
