@@ -46,6 +46,7 @@ def create_app(
     accept_multipart_post: bool = False,
     accept_text_plain_post: bool = False,
     accept_get_query: bool = False,
+    accept_get_read_query: bool = True,
     array_batch_enabled: bool = False,
     engine: str | None = None,
     apq_enabled: bool = False,
@@ -94,6 +95,19 @@ def create_app(
         "accept_multipart_post": accept_multipart_post,
         "accept_text_plain_post": accept_text_plain_post,
         "accept_get_query": accept_get_query,
+        # Whether a plain, non-persisted, non-mutation *read* query executes over
+        # GET (`GET /graphql?query={ __typename }`), used by the query-get check.
+        # `accept_get_query` above gates GET *mutations* (the csrf check); this
+        # flag gates GET *read queries*. When True (default) the GET route runs
+        # the read query and returns a `data` response — the cacheable /
+        # cross-site-readable surface the query-get check reports. When False the
+        # GET route rejects a read query with HTTP 405 ("GET requests are not
+        # supported"), modelling a server that reserves GET for safe/empty
+        # responses only. Default True keeps the mock's permissive-by-default
+        # posture (mirroring cors_misconfigured=True etc.) and preserves the
+        # pre-existing behaviour the csrf / introspection-bypass GET probes rely
+        # on.
+        "accept_get_read_query": accept_get_read_query,
         "array_batch_enabled": array_batch_enabled,
         "engine": engine,
         "apq_enabled": apq_enabled,
@@ -523,6 +537,23 @@ def create_app(
                 content={
                     "errors": [
                         {"message": "GET requests may not perform mutations."}
+                    ]
+                },
+            )
+            _add_cors(response)
+            return response
+        # ── Read query over GET (query-get vector) ──────────────────────────
+        # A plain non-mutation read query carried in the URL. When the server
+        # reserves GET for safe/empty responses only, reject it (the secure
+        # posture the query-get check expects to find no finding for). When
+        # `accept_get_read_query` is True (default) the read query executes and
+        # returns data — the cacheable / cross-site-readable surface.
+        if query and not is_mutation and not cfg["accept_get_read_query"]:
+            response = JSONResponse(
+                status_code=405,
+                content={
+                    "errors": [
+                        {"message": "GET requests are not supported; use POST."}
                     ]
                 },
             )

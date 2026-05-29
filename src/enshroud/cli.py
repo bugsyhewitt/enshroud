@@ -35,6 +35,7 @@ ALL_CHECKS = [
     "cors",
     "csrf",
     "csrf-multipart",
+    "query-get",
     "cookie-posture",
     "graphql-ide",
     "fingerprint",
@@ -83,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
             "depth-bypass, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
-            "csrf-multipart, cookie-posture, graphql-ide, fingerprint, apq, "
+            "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, trace-exposure, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
@@ -191,6 +192,7 @@ async def run_checks(
         introspection,
         introspection_bypass,
         mutation_enum,
+        query_get,
         schema_fuzz,
         trace_exposure,
         websocket,
@@ -215,6 +217,7 @@ async def run_checks(
         "cors": cors.check,
         "csrf": csrf.check,
         "csrf-multipart": csrf_multipart.check,
+        "query-get": query_get.check,
         "cookie-posture": cookie_posture.check,
         "graphql-ide": graphql_ide.check,
         "fingerprint": fingerprint.check,

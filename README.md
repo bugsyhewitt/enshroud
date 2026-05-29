@@ -71,7 +71,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
                                  verbose-errors, mutation-enum, cors, csrf,
-                                 csrf-multipart, cookie-posture, graphql-ide,
+                                 csrf-multipart, query-get, cookie-posture,
+                                 graphql-ide,
                                  fingerprint, apq, apq-collision,
                                  apq-get, trace-exposure, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
@@ -206,6 +207,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
 | `csrf-multipart` | `csrf_via_content_type` | HIGH | Mutations executable via `multipart/form-data` or `text/plain` POST — the two remaining CORS simple-request transports (alternate-parser CSRF-mitigation bypass) |
+| `query-get` | `query_execution_over_get` | LOW | Plain non-persisted **read** query executes over a cacheable `GET` (`?query={ __typename }`) — a CORS simple-request, stable-URL transport that makes query responses cross-site readable and intermediary-cacheable (distinct from the `csrf` GET-*mutation* and `apq-get` persisted-query cases) |
 | `cookie-posture` | `insecure_cookie_posture` | MEDIUM | Session cookies missing `SameSite`/`Secure`/`HttpOnly` (browser-side precondition for CSRF/CSWSH) |
 | `graphql-ide` | `graphql_ide_exposed` | MEDIUM | In-browser GraphQL IDE (GraphiQL / GraphQL Playground / Apollo Sandbox) served over a browser GET — interactive query console + schema exploration left enabled in production |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
@@ -601,6 +603,60 @@ across every transport: reject `multipart/form-data`, `text/plain`, and
 and adopt a CSRF prevention scheme such as a custom-header requirement (e.g.
 Apollo's CSRF prevention, which demands a non-simple `Content-Type` or a
 preflight) or anti-CSRF tokens.
+
+### Read query over a cacheable GET
+
+The `query-get` check is the **read** counterpart to two existing GET-transport
+checks and covers a surface neither of them touches:
+
+- `csrf` probes whether a **mutation** executes over
+  `GET /graphql?query=mutation{...}` — a HIGH state-changing CSRF. A CSRF-safe
+  server *correctly* rejects mutations over GET (HTTP 405) while still happily
+  executing **read** queries over GET.
+- `apq-get` probes whether a **persisted** query (hash-only lookup) executes over
+  GET. That requires APQ to be enabled and a hash to be registered.
+
+`query-get` fills the remaining gap: a plain, non-persisted, non-mutation read
+query sent as `GET /graphql?query={ __typename }` that the server executes and
+returns `data` for. Serving read queries over GET is its own attack surface,
+independent of mutations and of APQ:
+
+- **Cross-site readability.** A GET carrying a `query` string is a CORS *simple
+  request* — a cross-origin page can issue it (`<img>`, `<script>`, `fetch`, link
+  prefetch) against a victim's authenticated session with no preflight. Paired
+  with a permissive CORS policy (see the `cors` check) the response body becomes
+  cross-site readable.
+- **Cacheability / cache poisoning.** A query addressed by a stable URL is
+  cacheable by any intermediary (CDN, reverse proxy, browser). A server that
+  caches authenticated responses by URL — or an attacker who can influence the
+  cache key — can poison or harvest cached query results. This is the
+  precondition the OWASP GraphQL Cheat Sheet warns about: enable GET only for
+  queries you explicitly want cached, and never for anything returning sensitive
+  data.
+
+The probe is benign and read-only: a single `{ __typename }` query (no mutation,
+no APQ, no schema knowledge) sent over GET. A **LOW** `query_execution_over_get`
+finding fires only when the server *executes* it — HTTP 2xx with a top-level
+`data` key. A server that reserves GET for safe/empty responses, rejects the read
+query (405 / "use POST"), serves an HTML IDE page, or only answers JSON over POST
+produces no finding. The severity is LOW because serving queries over GET is a
+deliberate, sometimes-desired configuration (it is how GraphQL responses are made
+CDN-cacheable); the finding is an attack-surface fact to weigh *alongside* the
+`cors` and `graphql-ide` findings, not a standalone vulnerability. It is strictly
+differential against `csrf` (which owns the higher-severity GET *mutation* case)
+and never double-counts with it. The check is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks query-get
+```
+
+Remediate by reserving GET for operations you explicitly want cached and that
+return no sensitive or per-user data; reject read queries over GET otherwise and
+require POST + `application/json`. If GET queries must stay enabled for CDN
+caching, mark authenticated responses `Cache-Control: private, no-store`, vary
+the cache key on the auth context, and pair them with strict CORS and an
+anti-CSRF custom-header requirement.
 
 ### Cookie posture
 
