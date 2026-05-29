@@ -349,6 +349,47 @@ browser. Pure response-header analysis — zero active probing.
 
 ---
 
+## Phase 2 Rotation 15 — fresh gap analysis
+
+All ten ranked directions above are shipped. A gap analysis against the Apollo
+Federation subgraph spec, the PortSwigger GraphQL labs, and the OWASP GraphQL
+Cheat Sheet surfaced one high-value vector with **zero** prior coverage in the
+codebase: Apollo Federation schema/entity exposure. It was implemented this
+rotation.
+
+### 11. Apollo Federation `_service.sdl` / `_entities` exposure ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 15). Check `federation`
+(`src/enshroud/checks/federation.py`), categories `federation_sdl_exposed`
+(HIGH) and `federation_entities_exposed` (MEDIUM), **included in `--checks all`**.
+Two read-only query probes: `{ _service { sdl } }` and
+`{ _entities(representations: []) { __typename } }`. Never mutates.
+
+**Severity:** HIGH (`_service.sdl`) / MEDIUM (`_entities`) — **Effort:** S —
+**Check name:** `federation`
+
+**What it detects:**
+Apollo Federation subgraphs implement the spec-mandated `_service { sdl }`
+field, which returns the subgraph's **entire schema as an SDL string regardless
+of whether `__schema` introspection is disabled**. This is a complete bypass of
+a disabled-introspection control — the single most impactful gap, because the
+v0.1 `introspection` check goes silent on exactly the endpoints this one lights
+up. The companion `_entities` resolver probe confirms the direct-subgraph
+entity-access surface behind documented federation authorization-bypass chains.
+
+**Competitor gap:**
+No open-source CLI scanner probes `_service.sdl` as an introspection bypass.
+graphql-cop and graphw00f do not cover federation. InQL requires manual replay.
+enshroud is the first to ship automated federation SDL-leak detection in the
+H1-markdown/JSON output pipeline.
+
+**References:**
+- Apollo Federation subgraph spec: `_service` / `_entities`
+- PortSwigger Web Security Academy: GraphQL introspection bypasses
+- OWASP GraphQL Cheat Sheet: "Introspection" and federation considerations
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -363,5 +404,6 @@ browser. Pure response-header analysis — zero active probing.
 | 8 | `field-dup` ✅ | `--checks field-dup` | MEDIUM | M | Yes (shipped) |
 | 9 | `directive-abuse` ✅ | `--checks directive-abuse` | MEDIUM | M | Yes (shipped) |
 | 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
+| 11 | `federation` ✅ | `--checks federation` | HIGH/MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

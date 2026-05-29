@@ -28,6 +28,8 @@ def create_app(
     field_dup_limit: int | None = None,
     directive_validation: bool = False,
     custom_directives: list[str] | None = None,
+    federation_sdl: str | None = None,
+    federation_entities: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -71,6 +73,15 @@ def create_app(
         # "Did you mean @X" suggestion that leaks the real directive name —
         # exercising the directive-abuse recon path.
         "custom_directives": custom_directives,
+        # Apollo Federation simulation, used by the federation check. When
+        # `federation_sdl` is a non-empty string the server answers
+        # `{ _service { sdl } }` with that SDL document (the introspection-bypass
+        # schema leak). When `federation_entities` is True the server recognises
+        # the `{ _entities(representations: []) { __typename } }` probe and
+        # returns an empty entity list. When neither is set, both federation
+        # fields are reported as unknown (non-federation endpoint).
+        "federation_sdl": federation_sdl,
+        "federation_entities": federation_entities,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -377,6 +388,49 @@ def create_app(
                 return response
 
         query: str = body.get("query", "")
+
+        # ── Apollo Federation probes ────────────────────────────────────────
+        # `_service { sdl }` leaks the full schema even when introspection is
+        # disabled; `_entities(...)` is the entity-resolution entry point.
+        if "_service" in query and "sdl" in query:
+            if cfg["federation_sdl"]:
+                response = JSONResponse(
+                    content={"data": {"_service": {"sdl": cfg["federation_sdl"]}}}
+                )
+                _add_cors(response)
+                return response
+            response = JSONResponse(
+                content={
+                    "errors": [
+                        {
+                            "message": (
+                                'Cannot query field "_service" on type "Query".'
+                            )
+                        }
+                    ]
+                }
+            )
+            _add_cors(response)
+            return response
+
+        if "_entities" in query:
+            if cfg["federation_entities"]:
+                response = JSONResponse(content={"data": {"_entities": []}})
+                _add_cors(response)
+                return response
+            response = JSONResponse(
+                content={
+                    "errors": [
+                        {
+                            "message": (
+                                'Cannot query field "_entities" on type "Query".'
+                            )
+                        }
+                    ]
+                }
+            )
+            _add_cors(response)
+            return response
 
         # Check depth limit
         if cfg["depth_limit"] is not None:
