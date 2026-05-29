@@ -32,6 +32,7 @@ ALL_CHECKS = [
     "auth-alias",
     "verbose-errors",
     "mutation-enum",
+    "mutation-allowlist-bypass",
     "cors",
     "csrf",
     "csrf-multipart",
@@ -84,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Choices: introspection, introspection-bypass, depth-dos, "
             "depth-bypass, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
-            "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
+            "field-oracle, auth-alias, verbose-errors, mutation-enum, "
+            "mutation-allowlist-bypass, cors, csrf, "
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, pq-enum, trace-exposure, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
@@ -192,6 +194,7 @@ async def run_checks(
         injection,
         introspection,
         introspection_bypass,
+        mutation_allowlist_bypass,
         mutation_enum,
         pq_enum,
         query_get,
@@ -216,6 +219,7 @@ async def run_checks(
         "auth-alias": auth_alias.check,
         "verbose-errors": debug_errors.check,
         "mutation-enum": mutation_enum.check,
+        "mutation-allowlist-bypass": mutation_allowlist_bypass.check,
         "cors": cors.check,
         "csrf": csrf.check,
         "csrf-multipart": csrf_multipart.check,

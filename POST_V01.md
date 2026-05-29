@@ -1333,6 +1333,127 @@ single-signal design.
 
 ---
 
+## Phase 2 Rotation 30 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **mutation-whitelist-bypass**
+check and a **schema-introspection-diff** check, with instructions to verify
+which (if either) is already shipped and to pick the next-best gap if both are
+infeasible.
+
+- **schema-introspection-diff** — **rejected, architecturally incompatible.**
+  A diff check requires *two* introspection snapshots taken at different points
+  in time (or against two different deployments) and a stored baseline to
+  compare against. enshroud is a single-shot, stateless scanner: every check
+  consumes a single configured target and emits findings from one pass. There
+  is no baseline store, no historical snapshot, no second target. A
+  schema-introspection-diff would either need to be a separate monitoring tool
+  or would need a wholly new "compare against stored baseline" feature in the
+  scanner; either way it does not fit the deterministic single-pass model the
+  rest of the suite uses.
+
+- **mutation-whitelist-bypass via field aliasing** — **rejected as framed,
+  redesigned and selected.** The naive framing (alias the mutation field to
+  hide its name from a gateway allow-list) does not survive scrutiny: the
+  literal mutation field name is *still in the document body* after aliasing,
+  so any string-match gateway sees it under both forms. The redesigned vector
+  that *does* survive — **operation-type confusion** — is genuinely new and
+  fits the architecture cleanly.
+
+### Candidate selected
+
+- **Mutation allow-list bypass via operation-type confusion** — **selected.**
+  GraphQL's spec is unambiguous (§6.2.2) that mutation fields may only resolve
+  under a `mutation { ... }` operation type, never under `query { ... }`. A
+  large family of production hardening controls — gateway / WAF rules, edge
+  CSRF guards, mutation-only rate limits, persisted-query allow-lists — keys
+  on the literal `mutation` operation token appearing in the request body and
+  applies an extra control to those requests. When a server's executor fails
+  to enforce the spec (or the schema accidentally exposes the same field on
+  both `Query` and `Mutation` roots, or a custom gateway rewrites the
+  operation type), the same mutation field is reachable through a `query`
+  operation type, and every gateway-side control is bypassed silently because
+  the request body never contains the word `mutation`.
+
+  Read-only by design: the check enumerates mutation fields via introspection
+  (same query `mutation-enum` uses) and probes **only mutations with at least
+  one required (NON_NULL) argument**. The probe omits arguments, so the
+  resolver can never run — the executor stops at argument validation. The
+  bypass signal is the `"argument is required"` error message, which proves
+  the executor *resolved* the field on the Query root. A spec-correct server
+  returns `Cannot query field "..." on type "Query"` for the same probe, which
+  the check ignores. Strictly differential against `auth-alias` (query-root
+  field-name-keyed authz), `mutation-enum` (introspection-only enumeration,
+  never invokes), `csrf` (cross-site mutation invocation via GET / form-POST),
+  and `pq-enum` (ID-keyed persisted-query store enumeration).
+
+### 23. Mutation allow-list bypass via operation-type confusion ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 30). New check `mutation-allowlist-bypass`
+(`src/enshroud/checks/mutation_allowlist_bypass.py`), category
+`mutation_allowlist_bypass_via_op_type` (HIGH), **included in `--checks all`**.
+The mock server gains a `mutation_arg_signature` per-mutation arg-shape
+declaration and an `op_type_confusion` flag (default False = spec-correct) that
+models the two posture cases: when False, a mutation field requested under
+`query { ... }` is rejected with `Cannot query field "..." on type "Query"`;
+when True, the executor resolves it on Query and returns the
+`argument "..." of type "...!" is required` validation error.
+
+**Severity:** HIGH — **Effort:** S — **Check name:** `mutation-allowlist-bypass`
+
+**What it detects:**
+A server that resolves a mutation field selected under a `query { ... }`
+operation type. The probe is read-only by construction: it targets only
+mutations declaring at least one NON_NULL argument and supplies no arguments,
+so the resolver halts at argument validation and never executes. The finding
+fires only on the `argument is required` wording (graphql-js / Apollo /
+graphene / Hot Chocolate / juniper / async-graphql / gqlgen / sangria all use
+this stable phrasing); the spec-correct `Cannot query field on type Query`
+rejection produces no finding.
+
+**Why it's genuinely new:**
+It is the first check to test operation-type enforcement on the executor
+side. `auth-alias` covers query-root field-name-keyed authorization; it
+never tests mutation fields, and the alias-rename bypass it detects is
+unrelated to the operation-type token. `mutation-enum` enumerates mutation
+names from introspection but never sends a mutation probe. `csrf` covers
+cross-site mutation invocation via GET / form-encoded POST but always sends
+a literal `mutation { ... }` document. `mutation-allowlist-bypass` is the
+only check that asks whether the mutation root is enforceable at all — every
+gateway control gated on the `mutation` operation token is silently bypassed
+when this check fires.
+
+**Competitor gap:**
+graphql-cop / graphw00f / Clairvoyance do not probe operation-type
+confusion. APIsec.ai / Akamai / Cloudflare WAF rules ship default rules
+matching on the `mutation` operation token, none of which detect a mutation
+field reached through a `query` operation. enshroud now reports the
+operation-type-confusion surface as a HIGH finding distinct from any other
+mutation-or-authorization check in the suite.
+
+**References:**
+- GraphQL Spec §6.2.2: mutation root operation type
+- OWASP GraphQL Cheat Sheet: operation-type validation
+- PortSwigger Web Security Academy: GraphQL access-control bypass vectors
+
+### Backlog after this rotation
+
+Directions 1–23 plus `verbose-errors`, `graphql-ide`, and `apq-collision` are
+all shipped. **schema-introspection-diff** is permanently rejected as
+architecturally incompatible (requires baseline state; enshroud is
+stateless). Open ideas not yet implemented and worth considering next:
+GraphQL response-cache poisoning via alias/normalisation (multi-request,
+stateful) and per-event subscription re-authorization over WebSocket
+(timing-dependent, inside the opt-in `websocket` check). Note: subscription
+*flooding* / subscription-dos has been deterministically rejected four times
+(R18, R19, R22, R27) as architecturally incompatible;
+**batch-query-depth** and **field-count-limit-probe** were rejected in R28,
+**query-complexity-score** in R29, and **schema-introspection-diff** in R30
+as either overlapping existing coverage or architecturally incompatible —
+do not re-suggest any of these without a genuinely new, deterministic,
+single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1362,5 +1483,6 @@ single-signal design.
 | 20 | `apq-get` ✅ | `--checks apq-get` | MEDIUM | S | Yes (shipped, R27) |
 | 21 | `query-get` ✅ | `--checks query-get` | LOW | S | Yes (shipped, R28) |
 | 22 | `pq-enum` ✅ | `--checks pq-enum` | MEDIUM | S | Yes (shipped, R29) |
+| 23 | `mutation-allowlist-bypass` ✅ | `--checks mutation-allowlist-bypass` | HIGH | S | Yes (shipped, R30) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

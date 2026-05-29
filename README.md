@@ -70,7 +70,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  batch-array, field-dup, fragment-cycle,
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
-                                 verbose-errors, mutation-enum, cors, csrf,
+                                 verbose-errors, mutation-enum,
+                                 mutation-allowlist-bypass, cors, csrf,
                                  csrf-multipart, query-get, cookie-posture,
                                  graphql-ide,
                                  fingerprint, apq, apq-collision,
@@ -205,6 +206,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `auth-alias` | `authz_bypass_via_alias` | HIGH | Field denied by name resolves when aliased — authorization keyed on field name / response key instead of the resolved field |
 | `verbose-errors` | `verbose_error_disclosure` | LOW–MEDIUM | Development/debug error mode leaking stack traces, source paths, exception classes, SQL, internal hosts, or framework versions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
+| `mutation-allowlist-bypass` | `mutation_allowlist_bypass_via_op_type` | HIGH | A mutation field resolves under a `query { … }` operation type — operation-type confusion bypasses any gateway / WAF / CSRF / persisted-query / mutation-rate-limit control keyed on the literal `mutation` operation token. Read-only by design: probes only mutations with a required argument and reads the argument-validation error, so the resolver never runs. |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
 | `csrf-multipart` | `csrf_via_content_type` | HIGH | Mutations executable via `multipart/form-data` or `text/plain` POST — the two remaining CORS simple-request transports (alternate-parser CSRF-mitigation bypass) |
