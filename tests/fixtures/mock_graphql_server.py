@@ -31,6 +31,7 @@ def create_app(
     federation_sdl: str | None = None,
     federation_entities: bool = False,
     fragment_cycle_validation: bool = False,
+    alias_auth_bypass: dict[str, Any] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -91,6 +92,18 @@ def create_app(
         # the cyclic document and executes it (returns data), simulating a
         # non-validating / buggy executor.
         "fragment_cycle_validation": fragment_cycle_validation,
+        # Field-aliasing authorization-bypass simulation, used by the
+        # `auth-alias` check. When set, models a server whose authorization is
+        # keyed on the *response key* (alias or field name) rather than on the
+        # field's own authorization metadata — the real-world bug class. Shape:
+        #   {"field": str,                 # the protected field name
+        #    "denied_key": str | None}     # the response key the deny-list
+        #                                   # matches on (defaults to `field`).
+        # The server returns a "not authorized" error when the protected field
+        # is selected under its denied key, but returns data when the same
+        # field is requested under a *different* alias — the bypass. When None
+        # (default) no field is protected and the check stays silent.
+        "alias_auth_bypass": alias_auth_bypass,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -492,6 +505,52 @@ def create_app(
                         }
                     ]
                 }
+            )
+            _add_cors(response)
+            return response
+
+        # ── Field-aliasing authorization bypass ─────────────────────────────
+        # Model a server whose authorization is enforced by matching the
+        # *response key* (the alias, or the field name when no alias is given)
+        # against a deny-list, instead of on the field's authorization metadata.
+        # The auth-alias check sends the protected field twice: once directly
+        # (`{ <field> { __typename } }`) and once aliased to a benign key
+        # (`{ <alias>: <field> { __typename } }`). A vulnerable server denies
+        # the first and serves data for the second.
+        aab = cfg["alias_auth_bypass"]
+        if aab and aab.get("field") and aab["field"] in query:
+            protected = aab["field"]
+            denied_key = aab.get("denied_key") or protected
+            # Find how the protected field is selected: `<key>: <field>` (alias)
+            # or bare `<field>`. The response key is the alias when present,
+            # else the field name itself.
+            alias_m = re.search(
+                rf"(\w+)\s*:\s*{re.escape(protected)}\b", query
+            )
+            if alias_m:
+                response_key = alias_m.group(1)
+            else:
+                response_key = protected
+            if response_key == denied_key:
+                # Authorization is keyed on this response key → deny.
+                response = JSONResponse(
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    f"Not authorized to access field "
+                                    f"\"{protected}\"."
+                                ),
+                                "extensions": {"code": "FORBIDDEN"},
+                            }
+                        ]
+                    }
+                )
+                _add_cors(response)
+                return response
+            # Different response key → control missed it → serve data (bypass).
+            response = JSONResponse(
+                content={"data": {response_key: {"__typename": "Object"}}}
             )
             _add_cors(response)
             return response

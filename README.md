@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -67,9 +67,10 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, depth-dos, alias-batch,
                                  batch-array, field-dup, fragment-cycle,
-                                 directive-abuse, field-oracle, verbose-errors,
-                                 mutation-enum, cors, csrf, cookie-posture,
-                                 fingerprint, apq, federation, all
+                                 directive-abuse, field-oracle, auth-alias,
+                                 verbose-errors, mutation-enum, cors, csrf,
+                                 cookie-posture, fingerprint, apq, federation,
+                                 all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -193,6 +194,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
 | `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
+| `auth-alias` | `authz_bypass_via_alias` | HIGH | Field denied by name resolves when aliased — authorization keyed on field name / response key instead of the resolved field |
 | `verbose-errors` | `verbose_error_disclosure` | LOW–MEDIUM | Development/debug error mode leaking stack traces, source paths, exception classes, SQL, internal hosts, or framework versions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
@@ -356,6 +358,57 @@ rejected when repeated and unknown directives are rejected outright, ensure
 directive processing happens after validation, disable directive/field
 suggestion hints in production, and count directive occurrences toward the query
 complexity budget.
+
+### Authorization bypass via field aliasing
+
+The `auth-alias` check tests an *authorization* flaw, not a denial-of-service
+one — and it is distinct from `alias-batch`. Where `alias-batch` abuses the
+*number* of aliases to exhaust resources / defeat rate limits, `auth-alias` uses
+a **single** alias to defeat a *field-name-keyed* security control and read data
+that should be forbidden.
+
+The bug class: some servers (and WAFs / API gateways) enforce authorization by
+matching the **literal field name or response key** of a selection against a
+deny-list, instead of evaluating the field's own authorization metadata while
+resolving it. On such a server, requesting a forbidden field under a different
+alias changes the response key the control inspects — so the field resolves and
+returns its data, bypassing the check entirely. This has been reported
+repeatedly against real GraphQL deployments (alias-based authorization / WAF
+bypass).
+
+Detection is read-only and **differential**. For each candidate field (the real
+top-level query fields when introspection is available, otherwise a bundled list
+of commonly-protected names like `me`, `users`, `secrets`, `apiKeys`,
+`billing`), the check sends two queries:
+
+1. **direct** — `{ <field> { __typename } }`
+2. **aliased** — `{ enshroudAliasProbe: <field> { __typename } }`
+
+A **HIGH** `authz_bypass_via_alias` finding fires *only* when the direct form is
+**denied** (an authorization / forbidden error) and the aliased form
+**succeeds** (returns data under the alias key). Equal outcomes — both denied,
+both allowed, both plain validation errors — never fire, so a correctly
+implemented server (authorization evaluated on the resolved field, not its
+response key) produces no findings. A "cannot query field" validation error is
+explicitly *not* treated as an authorization denial, so unknown candidate names
+cause no false positives. The check is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks auth-alias
+```
+
+Because the check compares a *denied* response against an *allowed* one, it is
+most powerful when run with an `--auth-header` whose token can reach the
+endpoint but should not be authorized for the probed field — but it also catches
+servers that deny anonymously by field name yet leak the same field under an
+alias.
+
+To remediate, enforce authorization inside field resolvers (or via schema
+directives the executor evaluates on the resolved field), never by matching the
+query text, field name, or response key. Any deny-list or WAF that inspects
+GraphQL field names must canonicalise aliases back to their underlying field
+before deciding.
 
 ### Cookie posture
 
