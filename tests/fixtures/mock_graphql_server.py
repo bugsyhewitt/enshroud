@@ -54,6 +54,7 @@ def create_app(
     apq_rate_limit: int | None = None,
     apq_verify_hash: bool = False,
     apq_serve_over_get: bool = False,
+    pq_id_store: bool = False,
     schema_fields: list[str] | None = None,
     injectable_arg: dict[str, Any] | None = None,
     set_cookies: list[str] | None = None,
@@ -129,6 +130,19 @@ def create_app(
         # PersistedQueryNotFound regardless of cache state, mirroring a server
         # that only honours APQ over POST.
         "apq_serve_over_get": apq_serve_over_get,
+        # ID-keyed persisted-query store, used by the pq-enum check. This is a
+        # *different* persisted-query model from APQ (above): instead of keying
+        # the cache on the SHA-256 hash of the query text, the server resolves a
+        # registered operation from a short, client-supplied document identifier
+        # (Relay `id`, trusted-documents `documentId`, or
+        # `extensions.persistedQuery.id`) sent with *no* query body. When True
+        # (the misconfiguration the pq-enum check detects) the POST route treats
+        # any such ID-only request as a hit and returns a `data` response,
+        # modelling a small/sequential ID space an attacker can enumerate to
+        # replay registered operations. When False (default, safe) an ID-only
+        # request is not recognised and falls through to the normal handlers
+        # (yielding an error / non-`data` response), so the check stays silent.
+        "pq_id_store": pq_id_store,
         # Real top-level fields, used by the schema-fuzz oracle simulation.
         "schema_fields": schema_fields,
         # Injectable argument simulation, used by the injection check.
@@ -728,6 +742,55 @@ def create_app(
                     return response
                 # Non-validating executor: accept and "execute" the cyclic doc.
                 response = JSONResponse(content={"data": {"__typename": "Query"}})
+                _add_cors(response)
+                return response
+
+        # ── ID-keyed persisted-query store (pq-enum vector) ─────────────────
+        # An operation referenced by a short, guessable document identifier with
+        # NO query body. Distinct from APQ below, which keys on a SHA-256 hash.
+        # The pq-enum check probes three identifier transports: top-level
+        # `{"id": ...}`, top-level `{"documentId": ...}`, and an
+        # `extensions.persistedQuery.id` (no `sha256Hash`). When `pq_id_store`
+        # is enabled and one of these arrives without a query body, model a hit
+        # by returning data — the enumerable surface the check reports. When the
+        # store is off, fall through so the request hits the normal handlers.
+        if body.get("query") is None:
+            _ext = body.get("extensions") or {}
+            _pq_ext = _ext.get("persistedQuery") if isinstance(_ext, dict) else None
+            _has_id = (
+                body.get("id") is not None
+                or body.get("documentId") is not None
+                or (
+                    isinstance(_pq_ext, dict)
+                    and _pq_ext.get("id") is not None
+                    and "sha256Hash" not in _pq_ext
+                )
+            )
+            if _has_id:
+                if cfg["pq_id_store"]:
+                    response = JSONResponse(
+                        content={"data": {"__typename": "Query"}}
+                    )
+                    _add_cors(response)
+                    return response
+                # No ID-keyed store: an operation referenced by an unknown ID
+                # (with no query body) cannot be resolved. A server without this
+                # feature rejects it rather than executing something — the secure
+                # posture the pq-enum check must read as "no finding".
+                response = JSONResponse(
+                    status_code=400,
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    "PersistedQueryNotFound: no operation is "
+                                    "registered for the supplied identifier."
+                                ),
+                                "extensions": {"code": "PersistedQueryNotFound"},
+                            }
+                        ]
+                    },
+                )
                 _add_cors(response)
                 return response
 

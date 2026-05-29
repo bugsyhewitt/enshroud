@@ -74,7 +74,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  csrf-multipart, query-get, cookie-posture,
                                  graphql-ide,
                                  fingerprint, apq, apq-collision,
-                                 apq-get, trace-exposure, federation, all
+                                 apq-get, pq-enum, trace-exposure,
+                                 federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -214,6 +215,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `apq-collision` | `apq_hash_mismatch` | MEDIUM–HIGH | APQ cache poisoning: server stores a registration whose `query` does not hash to the supplied `sha256Hash` (missing `PersistedQueryHashMismatch` integrity check) |
 | `apq-get` | `apq_execution_over_get` | MEDIUM | APQ persisted query executes over a cacheable `GET` (`?extensions={persistedQuery:…}`) — a cross-site / cache-flooding transport the POST-only CSRF guard never covers |
+| `pq-enum` | `persisted_query_id_enumeration` | MEDIUM | A registered operation executes from a short, guessable document **ID** sent with no query body (Relay `id` / trusted-documents `documentId` / `extensions.persistedQuery.id`) — an enumerable, **ID-keyed** persisted-query store distinct from APQ's unguessable SHA-256 hash cache |
 | `trace-exposure` | `trace_exposure` | LOW | Apollo Tracing (`extensions.tracing`) or Federation FTV1 (`extensions.ftv1`) performance metadata exposed on the success path — leaks per-resolver timings and schema type/field names to arbitrary clients |
 | `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
@@ -911,6 +913,43 @@ is open without executing anything sensitive.
 enshroud --target https://api.example.com/graphql \
   --scope-file scope.txt \
   --checks apq-get
+```
+
+### Persisted-query enumeration over an ID-keyed store
+
+The `pq-enum` check targets a persisted-query model the three APQ checks (`apq`,
+`apq-collision`, `apq-get`) never touch. All three probe Apollo **Automatic
+Persisted Queries**, whose cache is keyed by the **SHA-256 hash of the query
+text** — a 256-bit identifier that is not guessable, so those checks are about
+*registration*, *hash collision* and *GET execution*, never about *discovering*
+operations you were not given.
+
+A separate, widely deployed model keys the store on a short, client-supplied
+**document identifier** instead of a content hash. Relay persisted queries,
+`@apollo/persisted-query-lists` / "trusted documents", Hasura allow-lists and
+many bespoke gateways let a client replay a registered operation by sending only
+an `id` / `documentId` (often a small integer or a sequential build identifier)
+with **no query body**. When that identifier space is small and guessable, an
+unauthenticated attacker can **enumerate the entire registered operation set** —
+replaying admin or internal operations they never possessed the source for —
+simply by walking IDs.
+
+enshroud probes the ID-keyed store with a handful of small identifiers across the
+three common transports — top-level `{"id": …}`, top-level `{"documentId": …}`,
+and an `extensions.persistedQuery.id` (no `sha256Hash`) — each carrying **no
+`query` body**, so the check only ever asks the server to run an
+*already-registered* operation, never one of its own. It fires a **MEDIUM**
+`persisted_query_id_enumeration` finding **only** when one of those ID-only
+requests returns a top-level `data` response (a registered operation executed
+from a guessable ID), and stops at the first confirmed signal. A pure-APQ server
+(hash-keyed, no ID lookup) returns `PersistedQueryNotFound` / a non-`data`
+response to every ID probe and produces no finding — keeping `pq-enum` strictly
+differential against the APQ checks.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks pq-enum
 ```
 
 ### Performance-tracing exposure (Apollo Tracing / FTV1)
