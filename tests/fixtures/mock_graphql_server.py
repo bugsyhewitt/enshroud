@@ -65,6 +65,7 @@ def create_app(
     incremental_delivery: bool = False,
     graphql_ide: str | None = None,
     introspection_filter: str | None = None,
+    tracing: str | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -197,6 +198,20 @@ def create_app(
         # silent) while the modelled alternate technique leaks. When None
         # (default) introspection behaves per `introspection_enabled`.
         "introspection_filter": introspection_filter,
+        # Performance-tracing exposure, used by the trace-exposure check.
+        # `introspection_filter` and friends shape the *error* / introspection
+        # paths; this flag shapes the *success* path's top-level `extensions`
+        # block — the metadata a production server should never emit to an
+        # arbitrary client. Values:
+        #   * "apollo"     — attach an Apollo Tracing block
+        #     (`extensions.tracing`) with an `execution.resolvers` list that
+        #     leaks parent/field type names and per-resolver nanosecond timings.
+        #   * "ftv1"       — attach a base64 `extensions.ftv1` Apollo Federation
+        #     trace string (opaque protobuf blob).
+        #   * "both"       — attach both formats.
+        # When None (default) the success path returns no `extensions` block, so
+        # the trace-exposure check stays silent (production-correct behaviour).
+        "tracing": tracing,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -242,6 +257,52 @@ def create_app(
         for cookie in cfg["set_cookies"] or []:
             response.headers.append("set-cookie", cookie)
         return response
+
+    def _tracing_extensions() -> dict[str, Any] | None:
+        """Build the success-path `extensions` block for the configured tracing.
+
+        Models what apollo-tracing / Apollo Federation FTV1 attach to a normal
+        200/`data` response. Returns None when tracing is disabled so the
+        success path stays free of any `extensions` key.
+        """
+        mode = cfg["tracing"]
+        if not mode:
+            return None
+        ext: dict[str, Any] = {}
+        if mode in ("apollo", "both"):
+            ext["tracing"] = {
+                "version": 1,
+                "startTime": "2026-01-01T00:00:00.000Z",
+                "endTime": "2026-01-01T00:00:00.002Z",
+                "duration": 2_000_000,
+                "parsing": {"startOffset": 1000, "duration": 5000},
+                "validation": {"startOffset": 7000, "duration": 3000},
+                "execution": {
+                    "resolvers": [
+                        {
+                            "path": ["__typename"],
+                            "parentType": "Query",
+                            "fieldName": "__typename",
+                            "returnType": "String!",
+                            "startOffset": 11000,
+                            "duration": 1500,
+                        }
+                    ]
+                },
+            }
+        if mode in ("ftv1", "both"):
+            # An opaque base64 protobuf blob in real servers; for detection
+            # purposes any non-empty string under `ftv1` is the signal.
+            ext["ftv1"] = "GhEKD0Fwb2xsb1RyYWNlRlRWMQ=="
+        return ext
+
+    def _success(data: dict[str, Any]) -> JSONResponse:
+        """Build a 200 data response, attaching tracing extensions if enabled."""
+        body: dict[str, Any] = {"data": data}
+        ext = _tracing_extensions()
+        if ext is not None:
+            body["extensions"] = ext
+        return JSONResponse(content=body)
 
     def _add_cors(response: JSONResponse) -> JSONResponse:
         if cfg["cors_misconfigured"]:
@@ -1156,8 +1217,10 @@ def create_app(
             _engine_headers(response)
             return response
 
-        # Default response
-        response = JSONResponse(content={"data": {"__typename": "Query"}})
+        # Default response. Uses _success so that, when tracing is configured,
+        # the benign `{ __typename }` probe carries the performance-tracing
+        # `extensions` block the trace-exposure check inspects.
+        response = _success({"__typename": "Query"})
         _add_cors(response)
         return response
 

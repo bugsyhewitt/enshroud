@@ -959,6 +959,91 @@ the opt-in `websocket` check).
 
 ---
 
+## Phase 2 Rotation 26 — research lap + fresh gap analysis
+
+POST_V01.md had again gone stale: Rotation 25 shipped the `apq-collision` check
+(commit `2f48324`, category `apq_hash_mismatch`, MEDIUM–HIGH, in `--checks all`)
+but did not add a rotation note here. The accurate current state at the start of
+R26 is **20 default `--checks all` checks plus 3 opt-in checks**, including
+`apq-collision` (#19, undocumented in this file until now).
+
+### Suggested candidates assessed against the actual codebase (both rejected)
+
+The R26 dispatch suggested **field-suggestion info-leak** or **alias-amplification
+depth** as the next check. Both were checked against the real source before
+implementing, per the standing "treat POST_V01.md as possibly stale" rule:
+
+- **Field-suggestion info-leak** — already shipped as `field-oracle`
+  (`src/enshroud/checks/field_oracle.py`, category `field_suggestion_oracle`,
+  LOW). It sends a non-existent field probe and harvests `Did you mean` field
+  names from the error. Rejected as already-shipped.
+- **Alias-amplification depth** — already shipped as `alias-batch`
+  (`src/enshroud/checks/alias_batch.py`, category `alias_batching`, MEDIUM). It
+  sends 100 aliased `__typename` copies and flags an absent alias/complexity
+  limit. Rejected as already-shipped.
+
+### Candidate selected
+
+- **Performance-tracing exposure** — **selected.** There was **zero prior
+  coverage** of the *success-path* `extensions` block. `verbose-errors`
+  (`debug_errors`) inspects `errors[].extensions` on the *failure* path for
+  stack traces; nothing inspected the top-level `extensions` of a normal
+  200/`data` response for Apollo Tracing (`extensions.tracing`) or Apollo
+  Federation FTV1 (`extensions.ftv1`) performance metadata. This is a
+  well-documented production misconfiguration (OWASP GraphQL Cheat Sheet:
+  *disable tracing in production*; Apollo Tracing spec) and is detectable with a
+  single benign `{ __typename }` query.
+
+### 19. Performance-tracing exposure (Apollo Tracing / FTV1) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 26). New check `trace-exposure`
+(`src/enshroud/checks/trace_exposure.py`), category `trace_exposure` (LOW),
+**included in `--checks all`**. Uses the existing `GraphQLClient.query` POST
+transport — no new client method. The mock server gains a `tracing` flag
+(`"apollo"` / `"ftv1"` / `"both"`, default None = production-correct) that
+attaches the corresponding `extensions` block to the success-path response.
+
+**Severity:** LOW — **Effort:** S — **Check name:** `trace-exposure`
+
+**What it detects:**
+A server that, in response to a single valid `{ __typename }` query, returns a
+top-level `extensions.tracing` (Apollo Tracing) block or an `extensions.ftv1`
+(Apollo Federation trace) string. Apollo Tracing's `execution.resolvers` list
+leaks parent/field GraphQL type names and per-resolver nanosecond timings — a
+schema-shape leak that survives introspection being disabled, plus a timing
+side-channel. FTV1 is the opaque federated-trace blob a subgraph should emit only
+for the trusted router.
+
+**Why it's genuinely new:**
+It is the first check to inspect the *success* path's `extensions`. It is strictly
+differential: it fires only when a recognised tracing format is present, so a
+production server that omits `extensions` (the default) produces no finding, and
+arbitrary unknown extension keys (e.g. cost hints) are not flagged — no false
+positives.
+
+**Competitor gap:**
+graphql-cop / graphw00f do not flag exposed Apollo Tracing / FTV1 performance
+metadata. enshroud now ships automated detection of success-path trace exposure
+in the H1-markdown / JSON pipeline.
+
+**References:**
+- OWASP GraphQL Cheat Sheet: disable tracing / introspection / field suggestions
+  in production
+- Apollo Tracing specification (`apollo-tracing` `extensions.tracing` format)
+- Apollo Federation FTV1 trace (`apollo-federation-include-trace: ftv1`)
+
+### Backlog after this rotation
+
+Directions 1–19 plus `verbose-errors` and `graphql-ide` are all shipped (note:
+this file now also documents the previously-undocumented `apq-collision` from
+R25). No pre-written directions remain; future rotations should continue the
+research-lap pattern. Open ideas not yet implemented and worth considering next:
+GraphQL response-cache poisoning via alias/normalisation (multi-request,
+stateful) and per-event subscription re-authorization over WebSocket
+(timing-dependent, inside the opt-in `websocket` check).
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -983,5 +1068,7 @@ the opt-in `websocket` check).
 | 16 | `introspection-bypass` ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped) |
 | 17 | `introspection-bypass` (fragment-spread) ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped, extends #16) |
 | 18 | `depth-bypass` ✅ | `--checks depth-bypass` | MEDIUM | S | Yes (shipped) |
+| — | `apq-collision` ✅ | `--checks apq-collision` | MEDIUM–HIGH | S | Yes (shipped, R25) |
+| 19 | `trace-exposure` ✅ | `--checks trace-exposure` | LOW | S | Yes (shipped, R26) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

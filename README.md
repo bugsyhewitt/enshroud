@@ -73,7 +73,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  verbose-errors, mutation-enum, cors, csrf,
                                  csrf-multipart, cookie-posture, graphql-ide,
                                  fingerprint, apq, apq-collision,
-                                 federation, all
+                                 trace-exposure, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -211,6 +211,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
 | `apq-collision` | `apq_hash_mismatch` | MEDIUM–HIGH | APQ cache poisoning: server stores a registration whose `query` does not hash to the supplied `sha256Hash` (missing `PersistedQueryHashMismatch` integrity check) |
+| `trace-exposure` | `trace_exposure` | LOW | Apollo Tracing (`extensions.tracing`) or Federation FTV1 (`extensions.ftv1`) performance metadata exposed on the success path — leaks per-resolver timings and schema type/field names to arbitrary clients |
 | `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
@@ -817,6 +818,37 @@ gate registration behind authentication.
 enshroud --target https://api.example.com/graphql \
   --scope-file scope.txt \
   --checks apq-collision
+```
+
+### Performance-tracing exposure (Apollo Tracing / FTV1)
+
+The `trace-exposure` check looks at the **success** path rather than the error
+path, which makes it distinct from `verbose-errors`. Where `verbose-errors`
+hunts for stack traces attached to `errors[].extensions` when a query *fails*,
+`trace-exposure` sends a single benign `{ __typename }` query and inspects the
+top-level `extensions` block of the normal 200/`data` response for performance
+metadata a production server should never emit.
+
+Two formats are detected. **Apollo Tracing** (`extensions.tracing`) carries an
+`execution.resolvers` list that names every resolved field together with its
+parent and field GraphQL types, plus per-resolver wall-clock timings in
+nanoseconds — a schema-shape leak that survives introspection being disabled,
+and a timing side-channel that helps distinguish authorized-empty from forbidden
+lookups and enumerate valid identifiers. **Apollo Federation FTV1**
+(`extensions.ftv1`) is the federated-trace protobuf blob a subgraph should emit
+only for the trusted Apollo Router, never for an arbitrary client.
+
+The signal is unambiguous: `{ __typename }` is valid against every GraphQL
+endpoint, so a tracing block is purely the server's choice to expose it. The
+check fires a **LOW** `trace_exposure` finding only when such a block is present
+(naming the formats found and a sample of leaked resolver field/type names), and
+stays silent on a production-correct server that omits `extensions` entirely. It
+is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks trace-exposure
 ```
 
 ### Schema fuzzing (Clairvoyance-style)
