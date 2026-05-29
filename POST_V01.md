@@ -1137,6 +1137,105 @@ incompatible — do not re-suggest it without a deterministic single-signal desi
 
 ---
 
+## Phase 2 Rotation 28 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **batch-query-depth** check
+and a **field-count-limit-probe** check, with instructions to verify which (if
+either) is already shipped, and to pick the next-best gap if both overlap. Both
+were assessed against the *actual* source (POST_V01.md is treated as possibly
+stale) before implementing — and **both were rejected as overlapping existing
+coverage:**
+
+- **batch-query-depth** — **rejected, overlapping.** This combines two axes that
+  are each already shipped: JSON-array transport batching is `batch-array`
+  (`array_batching`, HIGH — fires when N array operations execute) and query
+  nesting depth is `depth-dos` (`depth_dos`, LOW). A "depth-inside-a-batch" probe
+  cannot be made strictly differential against those two without double-counting:
+  a server that runs the batch already trips `batch-array`, and a server that
+  runs deep nesting already trips `depth-dos`. There is no single new signal here
+  that the existing checks do not already fire on.
+- **field-count-limit-probe** — **rejected, overlapping.** Total field/node count
+  is already covered from two directions: alias breadth is `alias-batch`
+  (`alias_batching`, MEDIUM — 100 aliased `__typename` copies accepted) and
+  selection/fragment repetition is `field-dup` (`field_duplication_dos`, MEDIUM —
+  500 repeated fields / fragment spreads accepted). A bare field-count probe
+  would re-fire on the same "server has no per-request complexity cap" signal
+  those two already detect — a double-count, not a new class.
+
+### Candidate selected
+
+- **Read query over a cacheable GET** — **selected.** GraphQL's GET transport
+  was only partially covered. `csrf` probes GET execution of **mutations** (HIGH
+  CSRF) and explicitly builds a `mutation { … }` document; a CSRF-safe server
+  rejects that with HTTP 405 while still serving read queries over GET.
+  `apq-get` probes GET execution of a **persisted** query (hash-only lookup,
+  requires APQ enabled + a registered hash). **Neither fires** for the plain,
+  non-persisted, non-mutation case — a normal read query sent as
+  `GET /graphql?query={ __typename }` that the server executes. That GET read
+  transport is its own surface: it is a CORS *simple request* (cross-site
+  triggerable, no preflight) addressable by a stable, intermediary-cacheable URL,
+  so it turns any query response into cross-site-readable / cache-poisonable
+  content. Fully deterministic, read-only (a single `{ __typename }` probe),
+  single-request, and strictly differential against `csrf` (mutations) and
+  `apq-get` (persisted).
+
+### 21. Read query over a cacheable GET ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 28). New check `query-get`
+(`src/enshroud/checks/query_get.py`), category `query_execution_over_get` (LOW),
+**included in `--checks all`**. Reuses the existing `GraphQLClient.get_query`
+transport — no new client method. The mock server gains an
+`accept_get_read_query` flag (default True = the mock's existing
+permissive-by-default posture) that, when False, models a server that reserves
+GET for safe/empty responses and rejects a read query over GET with HTTP 405.
+
+**Severity:** LOW — **Effort:** S — **Check name:** `query-get`
+
+**What it detects:**
+A server that *executes* a plain, non-persisted, non-mutation read query sent as
+`GET /graphql?query={ __typename }` and returns a top-level `data` response. The
+finding fires only on actual execution (2xx + non-null `data`); a server that
+rejects the read query over GET, serves an HTML IDE page, or only answers JSON
+over POST produces no finding.
+
+**Why it's genuinely new:**
+It is the first check to test plain read-query execution over GET. `csrf` owns
+the higher-severity GET *mutation* case (and a CSRF-safe server passes it while
+still serving read queries over GET); `apq-get` owns the persisted-query GET
+case (which requires APQ). `query-get` is strictly differential against both and
+LOW severity because GET-served queries are a deliberate caching configuration —
+the finding is an attack-surface fact to weigh alongside `cors` / `graphql-ide`,
+not a standalone vuln. Covered by a dedicated regression test that confirms a
+GET-rejecting server yields no finding.
+
+**Competitor gap:**
+graphql-cop / graphw00f flag GET-method support generically; they do not
+differentiate read-query GET execution from the mutation-CSRF and persisted-query
+cases or fold it into a graded H1-markdown / JSON pipeline. enshroud now reports
+the read-query GET transport distinctly from `csrf` and `apq-get`.
+
+**References:**
+- OWASP GraphQL Cheat Sheet: GET requests can be cached; enable GET only for
+  queries you explicitly want cached, never for sensitive data
+- PortSwigger Web Security Academy: GraphQL CSRF / queries over GET
+- CORS specification: GET is a "simple request" (no preflight)
+
+### Backlog after this rotation
+
+Directions 1–21 plus `verbose-errors`, `graphql-ide`, and `apq-collision` are all
+shipped. No pre-written directions remain; future rotations should continue the
+research-lap pattern. Open ideas not yet implemented and worth considering next:
+GraphQL response-cache poisoning via alias/normalisation (multi-request,
+stateful) and per-event subscription re-authorization over WebSocket
+(timing-dependent, inside the opt-in `websocket` check). Note: subscription
+*flooding* / subscription-dos has been deterministically rejected four times
+(R18, R19, R22, R27) as architecturally incompatible; **batch-query-depth** and
+**field-count-limit-probe** were rejected in R28 as overlapping existing
+coverage — do not re-suggest any of these without a genuinely new, deterministic,
+single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1164,5 +1263,6 @@ incompatible — do not re-suggest it without a deterministic single-signal desi
 | — | `apq-collision` ✅ | `--checks apq-collision` | MEDIUM–HIGH | S | Yes (shipped, R25) |
 | 19 | `trace-exposure` ✅ | `--checks trace-exposure` | LOW | S | Yes (shipped, R26) |
 | 20 | `apq-get` ✅ | `--checks apq-get` | MEDIUM | S | Yes (shipped, R27) |
+| 21 | `query-get` ✅ | `--checks query-get` | LOW | S | Yes (shipped, R28) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
