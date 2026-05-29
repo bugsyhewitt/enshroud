@@ -432,6 +432,98 @@ H1-markdown / JSON pipeline.
 
 ---
 
+## Phase 2 Rotation 18 — research lap + fresh gap analysis
+
+POST_V01.md had gone stale across several rotations: the shipped `verbose-errors`
+check (commit `14d831f`, PR #15) was never recorded here, and the backlog of
+"directions" was fully exhausted. This rotation began with a full codebase read
+(every check, the client transport, the mock server) to rebuild an accurate
+picture of what exists, then implemented the highest-value genuinely-unimplemented
+vector.
+
+### Accurate current state (as of Rotation 18)
+
+**Default checks (`--checks all`), 17 total:**
+`introspection`, `depth-dos`, `alias-batch`, `batch-array`, `field-dup`,
+`fragment-cycle`, `directive-abuse`, `field-oracle`, **`auth-alias` (new this
+rotation)**, `verbose-errors`, `mutation-enum`, `cors`, `csrf`, `cookie-posture`,
+`fingerprint`, `apq`, `federation`.
+
+**Opt-in checks (excluded from `all`):** `schema-fuzz`, `injection`, `websocket`.
+
+**Previously undocumented but shipped:** `verbose-errors`
+(`src/enshroud/checks/debug_errors.py`), category `verbose_error_disclosure`,
+LOW–MEDIUM, in `--checks all`. Detects development/debug error mode leaking stack
+traces, source paths, exception classes, raw SQL, internal hosts, or framework
+versions from a single deliberately-malformed query. Now recorded here for
+accuracy.
+
+### Candidates evaluated this rotation (and why most were rejected)
+
+- **Query batching abuse via aliases** — already covered by `alias-batch`. Not new.
+- **Persisted query hash exhaustion** — `apq` already probes unauthenticated
+  registration + rapid re-registration (rate-limit). Substantially covered. Not new.
+- **Subscription flooding** — would be a timing-dependent sub-feature of the
+  existing `websocket` check; hard to assert deterministically. Marginal.
+- **`__typename` / type-name enumeration when introspection disabled** — partially
+  covered by `field-oracle` (field names) and `schema-fuzz` (top-level fields).
+  Incremental.
+- **Authorization bypass via field aliasing** — **zero prior coverage. Selected.**
+
+### 13. Authorization bypass via field aliasing ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 18). Check `auth-alias`
+(`src/enshroud/checks/auth_alias.py`), category `authz_bypass_via_alias` (HIGH),
+**included in `--checks all`**. Read-only and differential: for each candidate
+field (real query-type fields when introspection is available, else a bundled
+list of commonly-protected names) it sends the field directly
+(`{ <field> { __typename } }`) and aliased
+(`{ enshroudAliasProbe: <field> { __typename } }`). Fires **only** when the
+direct form is an authorization denial and the aliased form returns data under
+the alias key. Never mutates.
+
+**Severity:** HIGH — **Effort:** S — **Check name:** `auth-alias`
+
+**What it detects:**
+Servers (and WAFs / API gateways) that enforce authorization by matching the
+literal field name or response key against a deny-list, rather than evaluating
+the field's own authorization metadata during resolution. On such a server,
+aliasing a forbidden field to a different response key changes what the control
+matches on, so the field resolves and leaks its data.
+
+**Why it's genuinely new:**
+This is an **authorization** flaw, not a DoS one, and it is conceptually distinct
+from `alias-batch` (which abuses the *count* of aliases to exhaust resources /
+defeat rate limits). Here a *single* alias defeats a *field-name-keyed* security
+control, with impact = unauthorized data access. No existing check probes this.
+The detection is strictly differential (denied-direct AND allowed-aliased), and a
+plain "cannot query field" validation error is explicitly not treated as a
+denial, so a correctly-implemented server (authorization on the resolved field)
+produces no findings and unknown candidate names cause no false positives.
+
+**Competitor gap:**
+graphql-cop, graphw00f, and Clairvoyance do not test alias-based authorization
+bypass; InQL requires manual replay. enshroud ships automated differential
+detection in the H1-markdown / JSON pipeline.
+
+**References:**
+- HackerOne / PortSwigger writeups on alias-based authorization & WAF bypass
+- OWASP GraphQL Cheat Sheet: "Authorization" (enforce in resolvers, not on field names)
+- Apollo Client GitHub issue #10784 (field-aliasing abuse, cache context)
+
+### Backlog after this rotation
+
+The original ranked backlog (1–12) plus `verbose-errors` and this rotation's
+`auth-alias` are all shipped. No pre-written directions remain; future rotations
+should continue the research-lap pattern (read the codebase, run a fresh gap
+analysis against the OWASP GraphQL Cheat Sheet / PortSwigger labs / HackerOne
+corpus, implement one genuinely-new check). Open ideas not yet implemented and
+worth considering next: per-event subscription re-authorization over WebSocket,
+GraphQL response-cache poisoning via alias/normalisation, and batch-aware
+mutation rate-limit bypass weaponisation guidance.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -448,5 +540,7 @@ H1-markdown / JSON pipeline.
 | 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
 | 11 | `federation` ✅ | `--checks federation` | HIGH/MEDIUM | S | Yes (shipped) |
 | 12 | `fragment-cycle` ✅ | `--checks fragment-cycle` | MEDIUM | S | Yes (shipped) |
+| — | `verbose-errors` ✅ | `--checks verbose-errors` | LOW–MEDIUM | S | Yes (shipped) |
+| 13 | `auth-alias` ✅ | `--checks auth-alias` | HIGH | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.

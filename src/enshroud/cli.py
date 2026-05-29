@@ -26,6 +26,7 @@ ALL_CHECKS = [
     "fragment-cycle",
     "directive-abuse",
     "field-oracle",
+    "auth-alias",
     "verbose-errors",
     "mutation-enum",
     "cors",
@@ -72,8 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, field-oracle, "
-            "verbose-errors, mutation-enum, cors, csrf, cookie-posture, "
-            "fingerprint, apq, federation, all. "
+            "auth-alias, verbose-errors, mutation-enum, cors, csrf, "
+            "cookie-posture, fingerprint, apq, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -157,6 +158,7 @@ async def run_checks(
     from enshroud.checks import (
         alias_batch,
         apq,
+        auth_alias,
         batch_array,
         cookie_posture,
         cors,
@@ -186,6 +188,7 @@ async def run_checks(
         "fragment-cycle": fragment_cycle.check,
         "directive-abuse": directive_abuse.check,
         "field-oracle": field_oracle.check,
+        "auth-alias": auth_alias.check,
         "verbose-errors": debug_errors.check,
         "mutation-enum": mutation_enum.check,
         "cors": cors.check,
