@@ -69,6 +69,8 @@ def create_app(
     graphql_ide: str | None = None,
     introspection_filter: str | None = None,
     tracing: str | None = None,
+    mutation_arg_signature: dict[str, list[dict[str, Any]]] | None = None,
+    op_type_confusion: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -252,6 +254,19 @@ def create_app(
         # When None (default) the success path returns no `extensions` block, so
         # the trace-exposure check stays silent (production-correct behaviour).
         "tracing": tracing,
+        # Optional per-mutation argument signature, used by the
+        # mutation-allowlist-bypass check. When provided, the introspection
+        # response advertises each named mutation with the listed args
+        # (each entry shaped {"name": str, "type": str, "required": bool}).
+        # Independent of `dangerous_mutations`, which only carries names.
+        "mutation_arg_signature": mutation_arg_signature or {},
+        # When True, the POST handler models operation-type confusion: a
+        # `query { <mut> { ... } }` request resolves the mutation field on
+        # the Query root and stops at argument-validation, returning the
+        # "argument is required" error the bypass probe looks for. When
+        # False, the same request is rejected with a "Cannot query field on
+        # type Query" validation error — the spec-correct outcome.
+        "op_type_confusion": op_type_confusion,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -413,9 +428,23 @@ def create_app(
             )
         return fields
 
+    def _build_arg_introspection(arg_spec: dict[str, Any]) -> dict[str, Any]:
+        """Render one arg entry in introspection shape (with NON_NULL wrapper)."""
+        named = {"kind": "SCALAR", "name": arg_spec.get("type") or "String", "ofType": None}
+        if arg_spec.get("required"):
+            return {
+                "name": arg_spec.get("name"),
+                "type": {"kind": "NON_NULL", "name": None, "ofType": named},
+            }
+        return {"name": arg_spec.get("name"), "type": named}
+
+    def _args_for(name: str) -> list[dict[str, Any]]:
+        spec = cfg["mutation_arg_signature"].get(name) or []
+        return [_build_arg_introspection(a) for a in spec]
+
     def _build_introspection_response(dangerous_mutations: list[str]) -> dict:
         mutation_fields = [
-            {"name": name, "description": None, "args": []}
+            {"name": name, "description": None, "args": _args_for(name)}
             for name in dangerous_mutations
         ]
         return {
@@ -445,7 +474,7 @@ def create_app(
     def _build_mutation_introspection_response(dangerous_mutations: list[str]) -> dict:
         """Build introspection response specifically for mutationType fields query."""
         mutation_fields = [
-            {"name": name, "description": None, "args": []}
+            {"name": name, "description": None, "args": _args_for(name)}
             for name in dangerous_mutations
         ]
         return {
@@ -1230,6 +1259,58 @@ def create_app(
             response = JSONResponse(content=resp_data)
             _add_cors(response)
             return response
+
+        # ── Mutation allow-list bypass via operation-type confusion ─────────
+        # The mutation-allowlist-bypass check sends a probe shaped
+        # `query EnshroudOpTypeConfusion { <mutationField> { __typename } }`
+        # — a `query` operation containing a mutation field with no args.
+        # Two configurable behaviours model the two posture cases:
+        #   * op_type_confusion=False (spec-correct): the server rejects the
+        #     mutation field on the Query root with a validation error. The
+        #     check must read this as "no finding".
+        #   * op_type_confusion=True (vulnerable): the server resolves the
+        #     field on Query, then halts at argument validation because the
+        #     probe omitted the required arg. The check reads the
+        #     "argument is required" error as the bypass signal.
+        # The match is gated on the probe operation name so the handler
+        # never trips on unrelated `query` requests in other checks.
+        if (
+            "EnshroudOpTypeConfusion" in query
+            and cfg["mutation_arg_signature"]
+        ):
+            probe_match = re.search(
+                r"\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*__typename\s*\}\s*\}",
+                query,
+            )
+            probed_name = probe_match.group(1) if probe_match else ""
+            if probed_name in cfg["mutation_arg_signature"]:
+                if cfg["op_type_confusion"]:
+                    # Vulnerable: executor resolved the mutation on Query,
+                    # then argument validation fails because the probe sent
+                    # no arguments. Pick the first required arg for the
+                    # canonical "argument is required" wording.
+                    args = cfg["mutation_arg_signature"][probed_name]
+                    required = next(
+                        (a for a in args if a.get("required")), None
+                    )
+                    if required:
+                        arg_name = required.get("name") or "input"
+                        arg_type = required.get("type") or "String"
+                        msg = (
+                            f'Field "{probed_name}" argument "{arg_name}" '
+                            f'of type "{arg_type}!" is required, but it '
+                            "was not provided."
+                        )
+                        response = JSONResponse(content={"errors": [{"message": msg}]})
+                        _add_cors(response)
+                        return response
+                # Spec-correct: the mutation field does not exist on Query.
+                msg = (
+                    f'Cannot query field "{probed_name}" on type "Query".'
+                )
+                response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
 
         # Handle field suggestion oracle
         if "nonExistentFieldXyzzy" in query:
