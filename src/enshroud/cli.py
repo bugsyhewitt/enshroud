@@ -21,6 +21,7 @@ ALL_CHECKS = [
     "introspection",
     "introspection-bypass",
     "depth-dos",
+    "depth-bypass",
     "alias-batch",
     "batch-array",
     "field-dup",
@@ -76,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, introspection-bypass, depth-dos, "
-            "alias-batch, batch-array, "
+            "depth-bypass, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, defer-abuse, "
             "field-oracle, auth-alias, verbose-errors, mutation-enum, cors, csrf, "
             "csrf-multipart, cookie-posture, graphql-ide, fingerprint, apq, "
@@ -172,6 +173,7 @@ async def run_checks(
         csrf_multipart,
         debug_errors,
         defer_abuse,
+        depth_bypass,
         depth_dos,
         directive_abuse,
         federation,
@@ -193,6 +195,7 @@ async def run_checks(
         "introspection": introspection.check,
         "introspection-bypass": introspection_bypass.check,
         "depth-dos": depth_dos.check,
+        "depth-bypass": depth_bypass.check,
         "alias-batch": alias_batch.check,
         "batch-array": batch_array.check,
         "field-dup": field_dup.check,
