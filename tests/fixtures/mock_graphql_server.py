@@ -595,13 +595,36 @@ def create_app(
             injection_payload_markers = ("'", '"', "OR 1=1", "$gt", "\\", "SELECT", "sleep", "pg_sleep")
             is_attack = any(marker in val for marker in injection_payload_markers)
 
-            # Time-based simulation: sleep when a sleep payload arrives.
-            if inj.get("time_based") and ("pg_sleep" in val or "SLEEP" in val.upper()):
+            # Time-based simulation. A genuinely injectable backend sleeps for
+            # the *requested* duration: pg_sleep(3) is slow, pg_sleep(0) is fast.
+            # The zero-delay control payload must therefore return quickly so the
+            # check's differential (slow payload vs. zero-delay control) confirms
+            # the delay is attacker-controlled.
+            if inj.get("time_based"):
+                import re as _re
                 import time as _time
-                _time.sleep(3.2)
-                response = JSONResponse(content={"data": {inj["field"]: {"__typename": "Object"}}})
-                _add_cors(response)
-                return response
+
+                sleep_match = _re.search(r"pg_sleep\((\d+)\)", val, _re.IGNORECASE)
+                if sleep_match:
+                    requested = int(sleep_match.group(1))
+                    # Honour the requested sleep (capped so tests stay fast).
+                    _time.sleep(min(requested, 3) + (0.2 if requested else 0.0))
+                    response = JSONResponse(
+                        content={"data": {inj["field"]: {"__typename": "Object"}}}
+                    )
+                    _add_cors(response)
+                    return response
+
+            # Uniformly-slow simulation: the endpoint is slow for *every* request
+            # regardless of payload (busy backend / tarpit / WAF delay). This is
+            # the classic time-based false positive — the slow payload and the
+            # zero-delay control both take ~uniform_delay seconds, so a correct
+            # check must NOT fire on it.
+            if inj.get("uniform_delay"):
+                import time as _time
+
+                _time.sleep(float(inj["uniform_delay"]))
+                # Fall through to the normal benign-response path below.
 
             if is_attack and inj.get("dbms_error"):
                 response = JSONResponse(

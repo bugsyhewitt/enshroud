@@ -451,6 +451,16 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt \
   --checks injection --active
 ```
 
+To avoid the classic time-based false positive (a busy backend, a tarpit, or
+network jitter that makes *every* request slow), the blind probe confirms the
+delay is attacker-controlled rather than endpoint-wide. For each argument it
+measures three requests: a clean baseline, a **zero-delay control** payload
+(`pg_sleep(0)` — structurally identical but asking for a 0-second sleep), and the
+delay payload (`pg_sleep(3)`). enshroud only reports a finding when the delay
+payload is slower than **both** the baseline *and* the zero-delay control by the
+margin. The recorded evidence includes all three timings and both deltas so you
+can verify the differential before reporting.
+
 The check requires introspection to enumerate arguments; if introspection is
 disabled it produces no findings. Every request flows through the same scope
 validator as the rest of enshroud.
