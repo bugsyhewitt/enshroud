@@ -168,6 +168,13 @@ def create_app(
         #   * "post_only" — the server blocks introspection on the POST/JSON
         #     transport but the same `__schema` query succeeds over GET (the
         #     control was wired into one route handler only).
+        #   * "top_level_only" — the server inspects only the operation's
+        #     top-level selection field names and rejects a literal top-level
+        #     `__schema` / `__type` selection, but never resolves fragment
+        #     spreads. A `__schema` query reached through a named fragment
+        #     (`query { ...F } fragment F on Query { __schema {...} }`) has a
+        #     top-level selection of `...F` (a spread, not a meta-field), so it
+        #     slips past the naive guard and returns schema data.
         # When set, `introspection_enabled` is treated as False for the standard
         # POST `__schema` probe (so the existing `introspection` check stays
         # silent) while the modelled alternate technique leaks. When None
@@ -897,6 +904,36 @@ def create_app(
                         "errors": [{"message": "Introspection is disabled"}]
                     }
                 )
+                _add_cors(response)
+                return response
+            if filt == "top_level_only":
+                # The guard inspects only the operation's *top-level* selection
+                # field names and never resolves fragment spreads. Strip out
+                # fragment *definitions* (`fragment X on T { ... }`) and look for
+                # a literal `__schema` / `__type` meta-field in what remains: the
+                # operation body. A fragment-wrapped introspection query has only
+                # a `...Spread` at top level, so the guard misses it and the
+                # schema leaks.
+                operation_body = re.sub(
+                    r"fragment\s+\w+\s+on\s+\w+\s*\{[^}]*\}", "", query
+                )
+                top_level_meta = (
+                    "__schema" in operation_body
+                    or bool(re.search(r"__type\b(?!name)", operation_body))
+                )
+                if top_level_meta:
+                    response = JSONResponse(
+                        content={
+                            "errors": [{"message": "Introspection is disabled"}]
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+                # Fragment-wrapped introspection slipped past the guard → leak.
+                resp_data = _build_introspection_response(
+                    cfg["dangerous_mutations"]
+                )
+                response = JSONResponse(content=resp_data)
                 _add_cors(response)
                 return response
 

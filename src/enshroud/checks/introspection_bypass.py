@@ -25,6 +25,16 @@ executor option, so it only covers the exact shape the developer tested:
     handled by a different code path that never runs the guard, and returns the
     full schema.
 
+  * **Top-level-selection block (fragment-spread bypass).** The guard inspects
+    only the *top-level selection field names* of the operation and rejects a
+    literal top-level ``__schema`` / ``__type`` meta-field, but never resolves
+    fragment spreads. Moving the meta-field into a named fragment —
+    ``query { ...F } fragment F on Query { __schema { ... } }`` — leaves only a
+    ``...F`` spread at the operation's top level, so the guard sees no
+    meta-field, the executor resolves the fragment normally, and the full
+    schema is returned. This is the documented fragment-based introspection
+    bypass for naive name-list filters.
+
 This check is strictly **differential**, so it never overlaps with the
 ``introspection`` check and never false-positives on a correctly-hardened
 server:
@@ -68,6 +78,18 @@ TYPE_PROBE_QUERY = '{ __type(name: "Query") { name kind fields { name } } }'
 # Alternate technique 2: the standard `__schema` query, but issued over GET. A
 # transport-scoped block that only guards POST leaves this path open.
 GET_SCHEMA_QUERY = STANDARD_SCHEMA_QUERY
+
+# Alternate technique 3: `__schema` reached through a named fragment spread. A
+# guard that inspects only the operation's top-level selection field names sees
+# `...EnshroudIntrospect` (a spread, not a meta-field) and lets it through; the
+# executor resolves the fragment and returns the schema. Distinct field shape
+# from the standard probe so a guard keyed on the literal top-level meta-field
+# misses it.
+FRAGMENT_SCHEMA_QUERY = (
+    "query EnshroudIntrospect { ...EnshroudIntrospectFields } "
+    "fragment EnshroudIntrospectFields on Query "
+    "{ __schema { queryType { name } } }"
+)
 
 EVIDENCE_LEN = 400
 
@@ -214,6 +236,25 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
                 probe=GET_SCHEMA_QUERY,
                 evidence=_evidence(
                     "the GET transport", GET_SCHEMA_QUERY, get_body
+                ),
+            )
+        )
+
+    # Technique 3: `__schema` reached through a named fragment spread (defeats a
+    # guard that inspects only the operation's top-level selection field names).
+    try:
+        frag_body = await client.query(FRAGMENT_SCHEMA_QUERY)
+    except Exception:
+        frag_body = None
+    if _has_introspection_data(frag_body):
+        findings.append(
+            _finding(
+                technique="a named fragment spread (POST)",
+                probe=FRAGMENT_SCHEMA_QUERY,
+                evidence=_evidence(
+                    "a named fragment spread (POST)",
+                    FRAGMENT_SCHEMA_QUERY,
+                    frag_body,
                 ),
             )
         )

@@ -142,6 +142,38 @@ async def test_post_only_filter_fires_get_finding():
 
 
 @pytest.mark.asyncio
+async def test_top_level_only_filter_fires_fragment_finding():
+    """`__schema` blocked at top level but leaks via a named fragment spread."""
+    app = create_app(introspection_filter="top_level_only")
+    host, port, server = _start_server(app)
+    try:
+        url = f"http://{host}:{port}/graphql"
+        client = GraphQLClient(url)
+        findings = await introspection_bypass.check(client)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["category"] == "introspection_filter_bypass"
+        assert f["severity"] == "MEDIUM"
+        assert "fragment" in f["technique"]
+        evidence = json.loads(f["evidence"])
+        assert "fragment" in evidence["probe"]
+        assert "__schema" in evidence["probe"]
+    finally:
+        server.should_exit = True
+
+
+@pytest.mark.asyncio
+async def test_fragment_probe_constant_shape():
+    """The fragment probe is a named query + named fragment carrying __schema."""
+    probe = introspection_bypass.FRAGMENT_SCHEMA_QUERY
+    assert "fragment" in probe
+    assert "__schema" in probe
+    # Must spread the fragment at top level rather than select __schema directly,
+    # otherwise a top-level-name guard would catch it.
+    assert "..." in probe
+
+
+@pytest.mark.asyncio
 async def test_introspection_enabled_no_finding():
     """Standard introspection works → check defers to `introspection`, silent."""
     app = create_app(introspection_enabled=True, introspection_filter=None)
