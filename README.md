@@ -189,7 +189,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | Check | Category | Severity | Description |
 |---|---|---|---|
 | `introspection` | `introspection_enabled` | MEDIUM | Schema enumeration via introspection |
-| `introspection-bypass` | `introspection_filter_bypass` | MEDIUM | Standard `__schema` introspection denied, but the schema still leaks via the `__type` root field or the GET transport — a naive `__schema`-keyword / POST-only block bypass |
+| `introspection-bypass` | `introspection_filter_bypass` | MEDIUM | Standard `__schema` introspection denied, but the schema still leaks via the `__type` root field, the GET transport, or a named fragment spread — a naive `__schema`-keyword / POST-only / top-level-selection block bypass |
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
@@ -483,16 +483,25 @@ a proper executor-level "disable introspection" option:
   The *same* `{ __schema { ... } }` query issued over `GET` (document in the
   `query` URL parameter) is served by a different code path that never runs the
   guard.
+- **Top-level-selection block (fragment-spread bypass).** The guard inspects
+  only the operation's *top-level selection field names* and rejects a literal
+  top-level `__schema` / `__type`, but never resolves fragment spreads. Moving
+  the meta-field into a named fragment —
+  `query { ...F } fragment F on Query { __schema { ... } }` — leaves only a
+  `...F` spread at the operation's top level, so the guard sees no meta-field,
+  the executor resolves the fragment normally, and the full schema is returned.
 
 The check is strictly **differential**, so it never overlaps with
 `introspection` and never false-positives on a hardened server. It first
 confirms the standard POST `__schema` probe is **denied** (if standard
 introspection works, the check stays silent and defers to `introspection`), then
-tries the two alternate techniques. A **MEDIUM** `introspection_filter_bypass`
-finding fires only when the standard probe was denied *and* an alternate
-technique returns a non-null `__schema` / `__type`. A server that disables
-introspection *properly* (every transport, every root meta-field) denies all
-three probes and produces no finding. Every probe is read-only.
+tries the three alternate techniques (`__type` over POST, `__schema` over GET,
+and `__schema` via a named fragment spread over POST). A **MEDIUM**
+`introspection_filter_bypass` finding fires only when the standard probe was
+denied *and* an alternate technique returns a non-null `__schema` / `__type`. A
+server that disables introspection *properly* (every transport, every root
+meta-field, fragments resolved) denies all four probes and produces no finding.
+Every probe is read-only.
 
 ```bash
 enshroud --target https://api.example.com/graphql --scope-file scope.txt \

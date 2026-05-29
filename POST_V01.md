@@ -800,6 +800,91 @@ the opt-in `websocket` check).
 
 ---
 
+## Phase 2 Rotation 23 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation — a **field-level authorization
+check** and a **persisted-query abuse check** — were both verified against the
+actual codebase and rejected as already-shipped:
+
+- **Field-level / object-level authorization** is shipped as `auth-alias`
+  (`authz_bypass_via_alias`, HIGH): it differentially proves a field denied when
+  named directly resolves when aliased, i.e. authorization keyed on the response
+  key rather than the resolved field. Re-implementing it would duplicate an
+  existing check.
+- **Persisted-query (APQ) abuse** is shipped as `apq`
+  (`apq_enabled` / `apq_unrestricted_registration` / `apq_no_rate_limit`): it
+  probes APQ support, unauthenticated registration, and missing registration
+  rate-limiting. Already covered.
+
+This rotation followed the research-lap pattern: read every check, the client
+transport, the CLI registry, and the mock server; ran a fresh gap analysis
+against the OWASP GraphQL Cheat Sheet and the PortSwigger introspection-bypass
+labs; and implemented the highest-value genuinely-unimplemented vector that is
+deterministic, read-only, and few-request.
+
+### Candidates evaluated this rotation
+
+- **Field-level authorization** — already shipped (`auth-alias`). Rejected.
+- **Persisted-query abuse** — already shipped (`apq`). Rejected.
+- **Fragment-spread introspection-filter bypass** — **selected.** The R22
+  `introspection-bypass` check shipped two techniques (`__type` over POST,
+  `__schema` over GET) but did *not* cover the documented PortSwigger
+  fragment-based bypass: a guard that inspects only the operation's *top-level
+  selection field names* rejects a literal top-level `__schema` but misses
+  `query { ...F } fragment F on Query { __schema { ... } }`, where the top-level
+  selection is only a `...F` spread. Fully deterministic, single-request,
+  read-only, and differential against the standard probe — so it never
+  duplicates the existing `introspection` check.
+
+### 17. Introspection recovered via a fragment-spread filter bypass ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 23). Extends the existing
+`introspection-bypass` check (`src/enshroud/checks/introspection_bypass.py`),
+category `introspection_filter_bypass` (MEDIUM), **included in `--checks all`**.
+Adds a third probe (`FRAGMENT_SCHEMA_QUERY`) over the existing
+`GraphQLClient.query` POST transport — no new client method needed. The mock
+server gains an `introspection_filter="top_level_only"` mode that models a guard
+inspecting only top-level selection field names.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `introspection-bypass`
+(extended)
+
+**What it detects:**
+A guard that rejects a literal top-level `__schema` / `__type` meta-field but
+never resolves fragment spreads. Moving the meta-field into a named fragment
+spread leaves only a `...Spread` at the operation top level, so the guard sees no
+meta-field, the executor resolves the fragment, and the full schema leaks.
+
+**Why it's genuinely new:**
+The R22 introspection-bypass shipped `__type`-keyword and POST-only-GET
+techniques only. The fragment-spread bypass is a distinct, documented naive-guard
+class (top-level-name list vs. keyword deny-list vs. transport-scoped block). It
+remains strictly differential: it fires only when the standard POST `__schema`
+probe is denied *and* the fragment-wrapped probe returns non-null `__schema`
+data, so a properly hardened server (introspection disabled with fragments
+resolved) and a server already caught by `introspection` both produce no finding.
+
+**Competitor gap:**
+graphql-cop / graphw00f probe introspection with a single query shape on a
+single transport; they do not test fragment-wrapped meta-fields against a
+top-level-name guard. enshroud now ships all three documented naive-filter
+bypass techniques (`__type`, GET, fragment spread) in one differential check.
+
+**References:**
+- PortSwigger Web Security Academy: GraphQL introspection / alternate techniques (fragment-based bypass)
+- OWASP GraphQL Cheat Sheet: "Introspection" (disable at the executor layer, fragments resolved)
+
+### Backlog after this rotation
+
+Directions 1–17 plus `verbose-errors` and `graphql-ide` are all shipped. No
+pre-written directions remain; future rotations should continue the research-lap
+pattern. Open ideas not yet implemented and worth considering next: GraphQL
+response-cache poisoning via alias/normalisation (multi-request, stateful) and
+per-event subscription re-authorization over WebSocket (timing-dependent, inside
+the opt-in `websocket` check).
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -822,5 +907,6 @@ the opt-in `websocket` check).
 | — | `graphql-ide` ✅ | `--checks graphql-ide` | MEDIUM | S | Yes (shipped) |
 | 15 | `csrf-multipart` ✅ | `--checks csrf-multipart` | HIGH | S | Yes (shipped) |
 | 16 | `introspection-bypass` ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped) |
+| 17 | `introspection-bypass` (fragment-spread) ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped, extends #16) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
