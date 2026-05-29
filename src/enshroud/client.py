@@ -126,6 +126,24 @@ class GraphQLClient:
             )
             return resp
 
+    async def get_html(self, accept: str = "text/html") -> httpx.Response:
+        """GET the endpoint with a browser-style Accept header.
+
+        Many GraphQL servers content-negotiate an in-browser IDE (GraphiQL,
+        GraphQL Playground, Apollo Sandbox) versus the JSON API on the Accept
+        header: a browser navigating to the endpoint receives the HTML console,
+        while an ``application/json`` client receives the API. This helper sends
+        a plain GET (no query string) carrying a realistic browser Accept value
+        so the ``graphql-ide`` check can inspect whether an IDE page is served.
+        Returns the raw httpx Response.
+        """
+        headers = dict(self.headers)
+        headers.pop("Content-Type", None)
+        headers["Accept"] = accept
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            resp = await client.get(self.endpoint, headers=headers)
+            return resp
+
     async def get_query(
         self,
         query: str,

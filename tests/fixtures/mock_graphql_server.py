@@ -5,7 +5,32 @@ import re
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+
+# Minimal HTML pages carrying each IDE's distinctive marker string, matching the
+# needles in src/enshroud/checks/graphql_ide.py. Real consoles ship large
+# bundles; for detection purposes the marker substring is what matters.
+_IDE_HTML: dict[str, str] = {
+    "graphiql": (
+        "<!DOCTYPE html><html><head><title>GraphiQL</title></head>"
+        '<body><div id="graphiql">Loading GraphiQL...</div>'
+        '<script src="//cdn.jsdelivr.net/npm/graphiql/graphiql.min.js">'
+        "</script></body></html>"
+    ),
+    "playground": (
+        "<!DOCTYPE html><html><head><title>GraphQL Playground</title></head>"
+        '<body><div id="root"></div>'
+        '<script src="//cdn.jsdelivr.net/npm/graphql-playground-react/build/'
+        'static/js/middleware.js"></script></body></html>'
+    ),
+    "sandbox": (
+        "<!DOCTYPE html><html><head><title>Apollo Sandbox</title></head>"
+        '<body><div id="embeddable-sandbox"></div>'
+        '<script src="https://embeddable-sandbox.cdn.apollographql.com/'
+        '_latest/embeddable-sandbox.umd.production.min.js"></script>'
+        "</body></html>"
+    ),
+}
 
 
 def create_app(
@@ -33,6 +58,7 @@ def create_app(
     fragment_cycle_validation: bool = False,
     alias_auth_bypass: dict[str, Any] | None = None,
     incremental_delivery: bool = False,
+    graphql_ide: str | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -114,6 +140,13 @@ def create_app(
         # "Unknown directive" and rejects @stream as a directive-location
         # violation ("@stream may not be used on this field").
         "incremental_delivery": incremental_delivery,
+        # In-browser GraphQL IDE exposure, used by the graphql-ide check. When
+        # set to an IDE name ("graphiql", "playground", or "sandbox") the server
+        # serves an HTML console page (containing that IDE's marker string) in
+        # response to a GET carrying a browser `Accept: text/html` header — the
+        # production-IDE-left-enabled misconfiguration. When None (default) the
+        # GET endpoint only ever returns the JSON API, so the check stays silent.
+        "graphql_ide": graphql_ide,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -286,7 +319,25 @@ def create_app(
         return response
 
     @app.get("/graphql")
-    async def graphql_get(request: Request) -> JSONResponse:
+    async def graphql_get(request: Request):
+        # ── In-browser GraphQL IDE exposure ─────────────────────────────────
+        # When an IDE is configured and the request carries a browser HTML
+        # Accept header with no query string, serve the IDE console page (the
+        # production-IDE-left-enabled misconfiguration). A GET carrying a query
+        # string, or any non-HTML Accept, falls through to the JSON API below.
+        accept = request.headers.get("accept", "")
+        ide = cfg["graphql_ide"]
+        if (
+            ide
+            and "text/html" in accept.lower()
+            and "query" not in request.query_params
+        ):
+            html = _IDE_HTML.get(ide, _IDE_HTML["graphiql"])
+            response = HTMLResponse(content=html)
+            for cookie in cfg["set_cookies"] or []:
+                response.headers.append("set-cookie", cookie)
+            return response
+
         query = request.query_params.get("query", "")
         is_mutation = query.lstrip().startswith("mutation")
         if is_mutation and not cfg["accept_get_query"]:
