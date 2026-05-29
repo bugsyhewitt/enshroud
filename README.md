@@ -190,6 +190,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
+| `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
 | `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
@@ -268,6 +269,50 @@ To remediate, enforce a query-complexity / cost limit that counts repeated
 selections and fragment spreads, and cap the number of fragment spreads per
 operation, rejecting operations whose computed cost exceeds a fixed budget before
 execution.
+
+### Cyclic fragments
+
+The `fragment-cycle` check tests a vector distinct from `field-dup`. Where
+`field-dup` repeats a *non-recursive* fragment N times (linear amplification),
+this check sends **mutually recursive (cyclic)** fragment definitions, which the
+GraphQL specification (§5.5.2.2, *"Fragment spreads must not form cycles"*)
+requires every executor to statically reject during validation, **before**
+execution:
+
+```graphql
+{ ...A }
+fragment A on Query { __typename ...B }
+fragment B on Query { __typename ...A }
+```
+
+A spec-compliant validator detects the `A → B → A` cycle and returns a
+*"cannot spread fragment within itself"* error without executing the document. A
+server that instead **accepts** the document (returns `data` with no error) or
+**chokes** on it (recursing until it exhausts the stack / times out) has skipped
+this mandatory rule, exposing an unbounded-expansion denial-of-service primitive
+that a single tiny request can trigger.
+
+It sends two read-only probes, both anchored on `__typename`:
+
+1. **Two-fragment cycle** — the `A ⇄ B` pair above (the textbook case).
+2. **Self-referential fragment** — a fragment that spreads itself directly:
+   `{ ...S } fragment S on Query { __typename ...S }` (the minimal cycle).
+
+A finding fires (**MEDIUM**) when the server does *not* return a cycle/validation
+error for a probe — either it executed the cyclic document, or the request failed
+at the transport layer (timeout / dropped connection) in a way consistent with an
+expansion crash (reported in `crashed_vectors`). Nothing is mutated, so the check
+is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks fragment-cycle
+```
+
+To remediate, use a spec-compliant GraphQL validator that enforces the
+"fragment spreads must not form cycles" rule and reject any operation whose
+fragment definitions reference each other in a cycle before execution; do not
+disable or bypass standard validation in custom middleware.
 
 ### Directive overloading / unknown directives
 

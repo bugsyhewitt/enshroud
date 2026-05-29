@@ -390,6 +390,48 @@ H1-markdown/JSON output pipeline.
 
 ---
 
+## Phase 2 Rotation 16 — fresh gap analysis
+
+All eleven ranked directions above are shipped. A gap analysis against the
+GraphQL spec validation rules (§5.5), the existing DoS-axis coverage
+(`depth-dos`, `alias-batch`, `field-dup`, `directive-abuse`), and the OWASP
+GraphQL Cheat Sheet surfaced one self-contained, read-only vector with **zero**
+prior coverage: cyclic / self-referential fragment definitions. It was
+implemented this rotation.
+
+### 12. Cyclic fragment definitions (spec §5.5.2.2 bypass) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 16). Check `fragment-cycle`
+(`src/enshroud/checks/fragment_cycle.py`), category `fragment_cycle_dos` (MEDIUM),
+**included in `--checks all`**. Sends two read-only `__typename`-anchored probes:
+a two-fragment cycle (`{ ...A } fragment A on Query { __typename ...B } fragment B
+on Query { __typename ...A }`) and a self-referential fragment
+(`{ ...S } fragment S on Query { __typename ...S }`). Never mutates.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `fragment-cycle`
+
+**What it detects:**
+The GraphQL spec (§5.5.2.2, "Fragment spreads must not form cycles") requires
+executors to statically reject cyclic fragment documents during validation,
+before execution. A server that **accepts** the cyclic document (returns `data`)
+or **chokes** on it (timeout / dropped connection from unbounded expansion) has
+skipped this mandatory rule. This is a **distinct axis** from `field-dup`, which
+repeats a *non-recursive* fragment N times (linear amplification): a cycle
+expands without bound. The finding fires only when no cycle/validation error is
+returned; it reports accepted vs. crashed vectors in `evidence`.
+
+**Competitor gap:**
+graphql-cop and graphw00f do not probe for cyclic-fragment validation bypass;
+InQL requires manual replay. enshroud ships automated detection in the
+H1-markdown / JSON pipeline.
+
+**References:**
+- GraphQL spec §5.5.2.2: "Fragment spreads must not form cycles"
+- OWASP GraphQL Cheat Sheet: "Query limiting / fragment limiting"
+- PortSwigger Web Security Academy: GraphQL DoS via fragments
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -405,5 +447,6 @@ H1-markdown/JSON output pipeline.
 | 9 | `directive-abuse` ✅ | `--checks directive-abuse` | MEDIUM | M | Yes (shipped) |
 | 10 | `cookie-posture` ✅ | `--checks cookie-posture` | MEDIUM | S | Yes (shipped) |
 | 11 | `federation` ✅ | `--checks federation` | HIGH/MEDIUM | S | Yes (shipped) |
+| 12 | `fragment-cycle` ✅ | `--checks fragment-cycle` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
