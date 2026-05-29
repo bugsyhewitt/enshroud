@@ -68,7 +68,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                         Choices: introspection, introspection-bypass,
                                  depth-dos, depth-bypass, alias-batch,
                                  batch-array, field-dup, fragment-cycle,
-                                 directive-abuse, defer-abuse, field-oracle,
+                                 directive-abuse, directive-enforcement,
+                                 defer-abuse, field-oracle,
                                  auth-alias,
                                  verbose-errors, mutation-enum,
                                  mutation-allowlist-bypass, cors, csrf,
@@ -201,6 +202,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
 | `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
 | `directive-abuse` | `directive_abuse` | MEDIUM | Overloaded `@skip`/`@include` or unknown directives accepted without validation (directive-axis DoS + recon) |
+| `directive-enforcement` | `directive_enforcement_bypass` | MEDIUM | Server returns a field whose selection carried `@skip(if: true)` or `@include(if: false)` — built-in directive enforcement is broken at the executor layer (spec §3.13), so custom schema directives (`@auth` / `@cost` / `@cacheControl`) layered on the same evaluation pass are likely silently skipped too |
 | `defer-abuse` | `incremental_delivery_dos` | MEDIUM | Incremental delivery (`@defer`/`@stream`) exposed — connection-holding DoS amplification and deferred-payload authorization staleness |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
 | `auth-alias` | `authz_bypass_via_alias` | HIGH | Field denied by name resolves when aliased — authorization keyed on field name / response key instead of the resolved field |
