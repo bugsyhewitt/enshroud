@@ -70,8 +70,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
                                  verbose-errors, mutation-enum, cors, csrf,
-                                 cookie-posture, graphql-ide, fingerprint, apq,
-                                 federation, all
+                                 csrf-multipart, cookie-posture, graphql-ide,
+                                 fingerprint, apq, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -201,6 +201,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
 | `cors` | `cors_misconfiguration` | HIGH | CORS wildcard + credentials |
 | `csrf` | `csrf_via_content_type` | HIGH | Mutations executable via form-encoded POST or GET (CSRF) |
+| `csrf-multipart` | `csrf_via_content_type` | HIGH | Mutations executable via `multipart/form-data` or `text/plain` POST — the two remaining CORS simple-request transports (alternate-parser CSRF-mitigation bypass) |
 | `cookie-posture` | `insecure_cookie_posture` | MEDIUM | Session cookies missing `SameSite`/`Secure`/`HttpOnly` (browser-side precondition for CSRF/CSWSH) |
 | `graphql-ide` | `graphql_ide_exposed` | MEDIUM | In-browser GraphQL IDE (GraphiQL / GraphQL Playground / Apollo Sandbox) served over a browser GET — interactive query console + schema exploration left enabled in production |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
@@ -460,6 +461,52 @@ directives the executor evaluates on the resolved field), never by matching the
 query text, field name, or response key. Any deny-list or WAF that inspects
 GraphQL field names must canonicalise aliases back to their underlying field
 before deciding.
+
+### CSRF via alternate simple-request transports
+
+The `csrf-multipart` check is the companion to `csrf`. The `csrf` check probes
+the two most common CSRF-amenable transports — an
+`application/x-www-form-urlencoded` POST and a plain `GET`. `csrf-multipart`
+covers the **other two CORS "simple request" content types** a browser can send
+cross-origin *without* a preflight:
+
+- **`multipart/form-data`** — a `<form enctype="multipart/form-data">` submit, or
+  a cross-origin `fetch` with a `FormData` body;
+- **`text/plain`** — a cross-origin `fetch` with a JSON-shaped string body
+  labelled `Content-Type: text/plain`.
+
+This is a genuinely distinct exposure, not a duplicate of `csrf`. Servers very
+commonly validate the JSON and the form-urlencoded parsing paths but route a
+`multipart/form-data` body through a **different parser that never re-runs the
+CSRF / content-type check** — exactly the "the CSRF bug was *fixed* but a
+multipart request still slips past it" class disclosed across 2024–2026, where
+the validation was bound to request *parsing* instead of to the operation
+*execution* layer. `text/plain` is the same story for servers that body-sniff
+JSON regardless of the declared content type.
+
+The probe is read-only: it discovers the first mutation field via introspection
+and selects only `__typename` on it (no arguments, no resolver side effects
+beyond a bare field selection), falling back to a synthetic
+`mutation enshroudCsrfMultipartProbe { __typename }` when introspection is
+disabled. A **HIGH** `csrf_via_content_type` finding fires per transport only
+when the server returns HTTP 2xx with a top-level `data` key — i.e. it actually
+executed the operation over that transport. A server that rejects the alternate
+content type (`{"errors": [...]}` or a non-2xx status) produces no finding, so a
+correctly hardened endpoint stays silent. The check is part of the default
+`--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks csrf,csrf-multipart
+```
+
+Remediate by enforcing the CSRF / content-type check at the operation
+*execution* layer (not the request *parsing* layer) so it applies uniformly
+across every transport: reject `multipart/form-data`, `text/plain`, and
+`application/x-www-form-urlencoded` for operations, require `application/json`,
+and adopt a CSRF prevention scheme such as a custom-header requirement (e.g.
+Apollo's CSRF prevention, which demands a non-simple `Content-Type` or a
+preflight) or anti-CSRF tokens.
 
 ### Cookie posture
 

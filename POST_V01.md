@@ -610,6 +610,108 @@ weaponisation guidance.
 
 ---
 
+## Phase 2 Rotation 21 — research lap + fresh gap analysis
+
+POST_V01.md had again gone stale: the shipped `graphql-ide` check (commit
+`2df1495`, PR #18) was never recorded here. This rotation began with a full
+codebase read (every check in `src/enshroud/checks/`, the client transport, the
+CLI registry, and the mock server) to rebuild an accurate picture, then ran a
+fresh gap analysis against the OWASP GraphQL Cheat Sheet, the PortSwigger GraphQL
+labs, the Apollo CSRF-prevention model, and the 2024–2026 HackerOne / blog
+disclosure corpus, and implemented the highest-value genuinely-unimplemented
+vector.
+
+### Accurate current state (as of Rotation 21)
+
+**Default checks (`--checks all`), 20 total:**
+`introspection`, `depth-dos`, `alias-batch`, `batch-array`, `field-dup`,
+`fragment-cycle`, `directive-abuse`, `defer-abuse`, `field-oracle`, `auth-alias`,
+`verbose-errors`, `mutation-enum`, `cors`, `csrf`,
+**`csrf-multipart` (new this rotation)**, `cookie-posture`, `graphql-ide`,
+`fingerprint`, `apq`, `federation`.
+
+**Opt-in checks (excluded from `all`):** `schema-fuzz`, `injection`, `websocket`.
+
+**Previously undocumented but shipped:** `graphql-ide`
+(`src/enshroud/checks/graphql_ide.py`), category `graphql_ide_exposed`, MEDIUM,
+in `--checks all`. Detects an in-browser GraphQL IDE (GraphiQL / GraphQL
+Playground / Apollo Sandbox) served over a browser-style GET — recorded here for
+accuracy.
+
+### Candidates evaluated this rotation (and why most were rejected)
+
+- **GraphQL response-cache poisoning via alias/normalisation** (R18/R19 open
+  idea) — high value but multi-request and stateful; needs a richer cache model
+  than a single deterministic probe. Deferred again.
+- **Per-event subscription re-authorization over WebSocket** (R18/R19 open idea)
+  — belongs inside the opt-in `websocket` check and is timing/ordering
+  dependent; hard to assert deterministically. Deferred again.
+- **GET-based introspection bypass** — the `csrf` check already exercises the GET
+  transport for mutations; introspection-over-GET is incremental on top of the
+  existing `introspection` + GET coverage. Marginal.
+- **Regex-based introspection filter bypass (`__schema` + special char)** —
+  requires modelling a specific buggy filter; low determinism against a generic
+  mock and narrow applicability. Deferred.
+- **CSRF via `multipart/form-data` / `text/plain` simple-request transports** —
+  **zero prior coverage. Selected.** Deterministic, single-request, read-only,
+  and a documented 2024–2026 bypass class that the existing `csrf` check (which
+  only probes `x-www-form-urlencoded` + GET) does not cover.
+
+### 15. CSRF via `multipart/form-data` / `text/plain` transports ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 21). Check `csrf-multipart`
+(`src/enshroud/checks/csrf_multipart.py`), category `csrf_via_content_type`
+(HIGH), **included in `--checks all`**. Two new client transports
+(`GraphQLClient.post_multipart`, `GraphQLClient.post_text_plain`) issue the
+probes. Read-only: discovers the first mutation field via introspection and
+selects only `__typename`, falling back to a synthetic
+`mutation enshroudCsrfMultipartProbe { __typename }` when introspection is
+disabled. Fires per transport only on HTTP 2xx with a top-level `data` key.
+
+**Severity:** HIGH — **Effort:** S — **Check name:** `csrf-multipart`
+
+**What it detects:**
+The existing `csrf` check probes exactly two CSRF-amenable transports
+(`application/x-www-form-urlencoded` POST and `GET`). It does **not** probe the
+other two content types a browser sends cross-origin without a CORS preflight:
+`multipart/form-data` and `text/plain`. All four are CORS "simple requests".
+
+**Why it's genuinely new:**
+Servers commonly validate the JSON and `x-www-form-urlencoded` parsing paths but
+route a `multipart/form-data` body through a *different* parser that never runs
+the CSRF / content-type check — the documented "fixed CSRF vuln still bypassable
+via multipart" class (validation tied to request *parsing*, not the operation
+*execution* layer). `text/plain` is the same story for servers that body-sniff
+JSON regardless of the declared content type. The detection is strictly
+differential at the transport level: a server that rejects the alternate content
+type produces no finding, so a correctly hardened endpoint (or one already caught
+by `csrf`) is not double-counted by a false positive here.
+
+**Competitor gap:**
+graphql-cop / graphw00f / InQL do not automate `multipart/form-data` or
+`text/plain` CSRF transport probing; the `csrf` check itself only covered
+urlencoded + GET. enshroud now ships automated detection of all four CORS
+simple-request transports in the H1-markdown / JSON pipeline.
+
+**References:**
+- Checkmarx: "What's Old Becomes New Again: CSRF Attacks on GraphQL APIs"
+- Medium: "CSRF in GraphQL: How a 'Fixed' Vulnerability Still Allowed a Bypass" (multipart parsing path)
+- Apollo CSRF prevention docs (non-simple Content-Type / preflight requirement)
+- OWASP GraphQL Cheat Sheet: "Cross-Site Request Forgery (CSRF)"
+- PortSwigger Web Security Academy: GraphQL CSRF
+
+### Backlog after this rotation
+
+Directions 1–15 plus `verbose-errors` and `graphql-ide` are all shipped. No
+pre-written directions remain; future rotations should continue the research-lap
+pattern. Open ideas not yet implemented and worth considering next: GraphQL
+response-cache poisoning via alias/normalisation (multi-request, stateful),
+per-event subscription re-authorization over WebSocket (timing-dependent, inside
+the opt-in `websocket` check), and regex-based introspection-filter bypass
+(`__schema` + ignored special characters).
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -629,5 +731,7 @@ weaponisation guidance.
 | — | `verbose-errors` ✅ | `--checks verbose-errors` | LOW–MEDIUM | S | Yes (shipped) |
 | 13 | `auth-alias` ✅ | `--checks auth-alias` | HIGH | S | Yes (shipped) |
 | 14 | `defer-abuse` ✅ | `--checks defer-abuse` | MEDIUM | S | Yes (shipped) |
+| — | `graphql-ide` ✅ | `--checks graphql-ide` | MEDIUM | S | Yes (shipped) |
+| 15 | `csrf-multipart` ✅ | `--checks csrf-multipart` | HIGH | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
