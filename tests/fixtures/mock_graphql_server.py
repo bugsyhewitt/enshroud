@@ -41,6 +41,8 @@ def create_app(
     dangerous_mutations: list[str] | None = None,
     cors_misconfigured: bool = True,
     accept_form_post: bool = False,
+    accept_multipart_post: bool = False,
+    accept_text_plain_post: bool = False,
     accept_get_query: bool = False,
     array_batch_enabled: bool = False,
     engine: str | None = None,
@@ -69,6 +71,13 @@ def create_app(
         "dangerous_mutations": dangerous_mutations or [],
         "cors_misconfigured": cors_misconfigured,
         "accept_form_post": accept_form_post,
+        # Whether mutations are executable via multipart/form-data and text/plain
+        # POSTs — the two CORS simple-request content types the csrf-multipart
+        # check probes (distinct from the x-www-form-urlencoded path above). A
+        # server that validates JSON / urlencoded but routes these alternate
+        # transports through a parser that skips the CSRF check executes them.
+        "accept_multipart_post": accept_multipart_post,
+        "accept_text_plain_post": accept_text_plain_post,
         "accept_get_query": accept_get_query,
         "array_batch_enabled": array_batch_enabled,
         "engine": engine,
@@ -360,6 +369,8 @@ def create_app(
     async def graphql_post(request: Request) -> JSONResponse:
         content_type = request.headers.get("content-type", "")
         is_form = "application/x-www-form-urlencoded" in content_type
+        is_multipart = "multipart/form-data" in content_type
+        is_text_plain = "text/plain" in content_type
 
         if is_form:
             if not cfg["accept_form_post"]:
@@ -381,6 +392,57 @@ def create_app(
                 return response
             form = await request.form()
             query = form.get("query", "")
+            response = JSONResponse(content={"data": {"__typename": "Mutation"}})
+            _add_cors(response)
+            return response
+
+        # ── multipart/form-data transport (csrf-multipart vector 1) ─────────
+        # A CORS simple-request content type. A CSRF-safe server rejects it; a
+        # vulnerable one parses the multipart body and executes the operation.
+        if is_multipart:
+            if not cfg["accept_multipart_post"]:
+                response = JSONResponse(
+                    status_code=400,
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    "This operation requires "
+                                    "Content-Type: application/json."
+                                )
+                            }
+                        ]
+                    },
+                )
+                _add_cors(response)
+                return response
+            form = await request.form()
+            _ = form.get("query", "")
+            response = JSONResponse(content={"data": {"__typename": "Mutation"}})
+            _add_cors(response)
+            return response
+
+        # ── text/plain transport (csrf-multipart vector 2) ─────────────────
+        # The body is JSON but labelled text/plain (a CORS simple request). A
+        # CSRF-safe server rejects the content type; a vulnerable one sniffs the
+        # JSON body and executes it regardless of the declared content type.
+        if is_text_plain:
+            if not cfg["accept_text_plain_post"]:
+                response = JSONResponse(
+                    status_code=400,
+                    content={
+                        "errors": [
+                            {
+                                "message": (
+                                    "This operation requires "
+                                    "Content-Type: application/json."
+                                )
+                            }
+                        ]
+                    },
+                )
+                _add_cors(response)
+                return response
             response = JSONResponse(content={"data": {"__typename": "Mutation"}})
             _add_cors(response)
             return response

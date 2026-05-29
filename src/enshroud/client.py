@@ -126,6 +126,67 @@ class GraphQLClient:
             )
             return resp
 
+    async def post_multipart(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Send a query as a ``multipart/form-data`` POST.
+
+        ``multipart/form-data`` is — alongside ``application/x-www-form-urlencoded``
+        and ``text/plain`` — one of the three CORS "simple request" content types
+        that a browser can issue cross-origin *without* a preflight. A server that
+        validates the JSON and form-urlencoded paths but routes a multipart body
+        through a different parser that skips the CSRF check is exposed to a
+        cross-site request forgery via this alternate transport — a documented
+        bypass of a "fixed" CSRF mitigation. The GraphQL ``query`` (and any
+        ``variables``) are sent as multipart form fields. Returns the raw httpx
+        Response.
+        """
+        headers = dict(self.headers)
+        # Drop our JSON content type; httpx sets the multipart boundary from `files`.
+        headers.pop("Content-Type", None)
+        # Using `files=` forces httpx to encode the body as multipart/form-data.
+        # Each part is sent with no filename so it is a plain form field, mirroring
+        # how a browser <form enctype="multipart/form-data"> serialises a text input.
+        files: dict[str, tuple[None, str]] = {"query": (None, query)}
+        if variables:
+            files["variables"] = (None, json.dumps(variables))
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                self.endpoint,
+                headers=headers,
+                files=files,
+            )
+            return resp
+
+    async def post_text_plain(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Send a JSON GraphQL body but labelled ``Content-Type: text/plain``.
+
+        ``text/plain`` is the third CORS "simple request" content type. A
+        cross-origin page can issue a ``fetch`` with this content type and a
+        JSON-shaped body without triggering a preflight; a server that sniffs the
+        body as JSON regardless of the declared content type (or that only checks
+        for ``application/json`` on the *form* parsing path) will execute the
+        operation, exposing it to CSRF. Returns the raw httpx Response.
+        """
+        payload: dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        headers = dict(self.headers)
+        headers["Content-Type"] = "text/plain"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                self.endpoint,
+                headers=headers,
+                content=json.dumps(payload),
+            )
+            return resp
+
     async def get_html(self, accept: str = "text/html") -> httpx.Response:
         """GET the endpoint with a browser-style Accept header.
 
