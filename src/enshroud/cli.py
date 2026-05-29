@@ -31,6 +31,7 @@ ALL_CHECKS = [
     "cookie-posture",
     "fingerprint",
     "apq",
+    "federation",
 ]
 
 # Opt-in checks: valid to request explicitly, but excluded from "all" because
@@ -69,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, depth-dos, alias-batch, batch-array, "
             "field-dup, directive-abuse, field-oracle, mutation-enum, cors, "
-            "csrf, cookie-posture, fingerprint, apq, all. "
+            "csrf, cookie-posture, fingerprint, apq, federation, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
         ),
     )
@@ -159,6 +160,7 @@ async def run_checks(
         csrf,
         depth_dos,
         directive_abuse,
+        federation,
         field_dup,
         field_oracle,
         fingerprint,
@@ -184,6 +186,7 @@ async def run_checks(
         "cookie-posture": cookie_posture.check,
         "fingerprint": fingerprint.check,
         "apq": apq.check,
+        "federation": federation.check,
         "websocket": websocket.check,
     }
 

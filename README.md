@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -68,7 +68,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                         Choices: introspection, depth-dos, alias-batch,
                                  batch-array, field-dup, directive-abuse,
                                  field-oracle, mutation-enum, cors, csrf,
-                                 cookie-posture, fingerprint, apq, all
+                                 cookie-posture, fingerprint, apq,
+                                 federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -197,6 +198,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `cookie-posture` | `insecure_cookie_posture` | MEDIUM | Session cookies missing `SameSite`/`Secure`/`HttpOnly` (browser-side precondition for CSRF/CSWSH) |
 | `fingerprint` | `engine_identified` | INFO | Identifies the GraphQL engine (Apollo, Graphene, Strawberry, Hasura, WPGraphQL, Yoga, Mercurius, graphql-ruby, graphql-js) and surfaces its known default-insecure behaviours |
 | `apq` | `apq_enabled`, `apq_unrestricted_registration`, `apq_no_rate_limit` | LOW–MEDIUM | Automatic Persisted Query exposure and unrestricted/unthrottled registration |
+| `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
 | `websocket` _(opt-in)_ | `websocket_unauth_subscription`, `websocket_introspection`, `websocket_no_tls`, `websocket_cswsh` | HIGH | Tests the GraphQL-over-WebSocket subscription transport for unauthenticated handshakes, schema reachability, plaintext `ws://`, and Cross-Site WebSocket Hijacking |
@@ -392,6 +394,36 @@ the H1-markdown report adds an **Engine Correlation** section explaining the
 root cause. Correlation is purely additive: it never changes a finding's
 category or severity, and it is a no-op when `fingerprint` is not run or the
 engine is unrecognised.
+
+### Apollo Federation exposure
+
+The `federation` check probes two Apollo Federation surfaces that a normal
+introspection check misses. Both probes are read-only single queries, so the
+check is part of the default `--checks all`.
+
+`_service { sdl }` is a **subgraph-spec-mandated** field that returns the
+endpoint's entire schema as an SDL string. Crucially it is served even when
+standard `__schema` introspection is disabled — so an operator who "turned off
+introspection" to hide the schema is still leaking all of it if the endpoint is
+a federation subgraph (common behind Apollo Gateway / Router). When `_service.sdl`
+returns a schema document, enshroud fires a **HIGH** `federation_sdl_exposed`
+finding with the SDL length and a prefix of the leaked document in the evidence.
+
+`_entities(representations: [...])` is the federation entity-resolution entry
+point, normally invoked only by the gateway. enshroud sends a benign empty-list
+probe; if the resolver is reachable (returns data or a representations-validation
+error rather than an unknown-field error) it fires a **MEDIUM**
+`federation_entities_exposed` finding — flagging the direct-subgraph entity
+access surface behind documented federation authorization-bypass chains.
+
+The check stays silent on non-federation endpoints, where both fields are
+rejected as unknown.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks federation
+```
 
 ### Schema fuzzing (Clairvoyance-style)
 
