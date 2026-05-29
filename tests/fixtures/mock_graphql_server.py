@@ -30,6 +30,7 @@ def create_app(
     custom_directives: list[str] | None = None,
     federation_sdl: str | None = None,
     federation_entities: bool = False,
+    fragment_cycle_validation: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -82,6 +83,14 @@ def create_app(
         # fields are reported as unknown (non-federation endpoint).
         "federation_sdl": federation_sdl,
         "federation_entities": federation_entities,
+        # Cyclic-fragment validation, used by the fragment-cycle check. When True
+        # the server behaves like a spec-compliant validator: it rejects a
+        # document whose fragment definitions form a cycle (A -> B -> A) or a
+        # self-referential fragment (S -> S) with a "Cannot spread fragment
+        # within itself" cycle error. When False (default) it silently accepts
+        # the cyclic document and executes it (returns data), simulating a
+        # non-validating / buggy executor.
+        "fragment_cycle_validation": fragment_cycle_validation,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -332,6 +341,61 @@ def create_app(
             )
             _add_cors(response)
             return response
+
+        query_for_cycle: str = body.get("query", "") or ""
+
+        # ── Cyclic-fragment validation ──────────────────────────────────────
+        # The fragment-cycle check sends documents whose fragment definitions
+        # form a cycle: a two-fragment cycle (fragment A spreads B and B spreads
+        # A) or a self-referential fragment (fragment S spreads S). Detect that a
+        # fragment spreads itself directly or indirectly by building the spread
+        # graph from the query text and looking for a back-edge.
+        frag_defs = re.findall(
+            r"fragment\s+(\w+)\s+on\s+\w+\s*\{([^}]*)\}", query_for_cycle
+        )
+        if frag_defs:
+            graph: dict[str, set[str]] = {}
+            for name, body_text in frag_defs:
+                spreads = set(re.findall(r"\.\.\.\s*(\w+)", body_text))
+                graph[name] = spreads
+
+            def _has_cycle() -> bool:
+                visiting: set[str] = set()
+                done: set[str] = set()
+
+                def dfs(node: str) -> bool:
+                    visiting.add(node)
+                    for nxt in graph.get(node, ()):  # type: ignore[arg-type]
+                        if nxt in visiting:
+                            return True
+                        if nxt not in done and nxt in graph and dfs(nxt):
+                            return True
+                    visiting.discard(node)
+                    done.add(node)
+                    return False
+
+                return any(dfs(n) for n in graph if n not in done)
+
+            if _has_cycle():
+                if cfg["fragment_cycle_validation"]:
+                    response = JSONResponse(
+                        content={
+                            "errors": [
+                                {
+                                    "message": (
+                                        "Cannot spread fragment within itself "
+                                        "via a fragment cycle."
+                                    )
+                                }
+                            ]
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+                # Non-validating executor: accept and "execute" the cyclic doc.
+                response = JSONResponse(content={"data": {"__typename": "Query"}})
+                _add_cors(response)
+                return response
 
         # ── APQ handling ────────────────────────────────────────────────────
         extensions = body.get("extensions") or {}
