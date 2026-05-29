@@ -52,6 +52,7 @@ def create_app(
     apq_require_auth: bool = False,
     apq_rate_limit: int | None = None,
     apq_verify_hash: bool = False,
+    apq_serve_over_get: bool = False,
     schema_fields: list[str] | None = None,
     injectable_arg: dict[str, Any] | None = None,
     set_cookies: list[str] | None = None,
@@ -103,6 +104,17 @@ def create_app(
         # (default) the server trusts the client-supplied hash, modelling the
         # cache-poisoning vulnerability the apq-collision check detects.
         "apq_verify_hash": apq_verify_hash,
+        # Whether a registered persisted query can be *executed over GET* via a
+        # hash-only lookup (`GET /graphql?extensions={persistedQuery:{...}}`),
+        # used by the apq-get check. APQ's defining feature is serving a query
+        # by hash over a cacheable GET request. When True (the documented
+        # misconfiguration) the GET route resolves the hash from the same APQ
+        # cache the POST route populates and returns the operation's data — a
+        # cacheable cross-site (CSRF / cache-flooding) execution path. When
+        # False (default, safe) a persisted-query GET returns
+        # PersistedQueryNotFound regardless of cache state, mirroring a server
+        # that only honours APQ over POST.
+        "apq_serve_over_get": apq_serve_over_get,
         # Real top-level fields, used by the schema-fuzz oracle simulation.
         "schema_fields": schema_fields,
         # Injectable argument simulation, used by the injection check.
@@ -448,6 +460,44 @@ def create_app(
             for cookie in cfg["set_cookies"] or []:
                 response.headers.append("set-cookie", cookie)
             return response
+
+        # ── APQ execution over GET (apq-get vector) ─────────────────────────
+        # A persisted-query lookup over GET carries the hash in an `extensions`
+        # query-string parameter and no `query` body. When APQ is enabled the
+        # server recognises it; whether it *executes* the cached operation over
+        # GET (the cacheable CSRF / cache-flooding misconfiguration) is gated on
+        # `apq_serve_over_get`. The GET route never registers — it only resolves
+        # the hash against the cache the POST route populates.
+        ext_param = request.query_params.get("extensions")
+        if ext_param is not None and cfg["apq_enabled"]:
+            import json as _json
+
+            try:
+                ext_obj = _json.loads(ext_param)
+            except Exception:
+                ext_obj = {}
+            pq_get = (ext_obj or {}).get("persistedQuery")
+            if isinstance(pq_get, dict):
+                get_hash = pq_get.get("sha256Hash", "")
+                served = cfg["apq_serve_over_get"] and get_hash in apq_cache
+                if served:
+                    response = JSONResponse(
+                        content={"data": {"__typename": "Query"}}
+                    )
+                    _add_cors(response)
+                    return response
+                response = JSONResponse(
+                    content={
+                        "errors": [
+                            {
+                                "message": "PersistedQueryNotFound",
+                                "extensions": {"code": "PersistedQueryNotFound"},
+                            }
+                        ]
+                    }
+                )
+                _add_cors(response)
+                return response
 
         query = request.query_params.get("query", "")
 

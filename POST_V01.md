@@ -1044,6 +1044,99 @@ stateful) and per-event subscription re-authorization over WebSocket
 
 ---
 
+## Phase 2 Rotation 27 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **subscription-dos** check
+and a **persisted-query storm** check, with instructions to pick whichever is
+more feasible after reading the codebase. Both were assessed against the *actual*
+source (POST_V01.md is treated as possibly stale) before implementing:
+
+- **Subscription-dos (subscription flooding)** — **rejected, again.** This exact
+  direction was explicitly evaluated and deferred in Rotations 18, 19, and 22.
+  Reliably asserting "many subscriptions bypass a rate limit" requires modelling
+  the rate limiter's wall-clock window, so the signal is timing-dependent and
+  non-deterministic against a mock — the opposite of every other enshroud check,
+  which fires on a single deterministic signal. It is fundamentally incompatible
+  with the project's defining architecture and cannot be shipped without
+  weakening it.
+- **Persisted-query storm** — the *registration* storm dimension is already
+  shipped: `apq` flags unauthenticated registration (`apq_unrestricted_registration`)
+  and missing registration rate-limiting (`apq_no_rate_limit`), and `apq-collision`
+  flags hash-integrity cache poisoning (`apq_hash_mismatch`). Re-implementing a
+  registration-flood probe would duplicate `apq_no_rate_limit`. **But** a
+  genuinely-uncovered, deterministic, single-request facet of the persisted-query
+  storm space had **zero prior coverage**: APQ *execution over GET*.
+
+### Candidate selected
+
+- **APQ execution over a cacheable GET** — **selected.** Both existing APQ checks
+  (`apq`, `apq-collision`) probe **POST only**. Neither tests APQ's defining
+  transport: the cacheable hash-only `GET`
+  (`GET /graphql?extensions={"persistedQuery":{…}}`). When a registered (or
+  hash-predicted) persisted operation executes over GET, it (a) reintroduces the
+  CSRF surface the POST/JSON `csrf` guard closes — a `GET` is a CORS simple
+  request, triggerable cross-site via `<img>`/`<script>`/prefetch and shareable as
+  a fixed URL — and (b) turns any CDN / reverse proxy fronting the endpoint into a
+  cache-flooding / poisoning target keyed by the persisted-query hash (the "storm"
+  dimension, made deterministic by the GET-execution signal). Fully deterministic,
+  read-only, few-request, and strictly differential against the POST-only checks.
+
+### 20. APQ execution over a cacheable GET ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 27). New check `apq-get`
+(`src/enshroud/checks/apq_get.py`), category `apq_execution_over_get` (MEDIUM),
+**included in `--checks all`**. Reuses `httpx` directly for the POST probe/
+registration (mirroring `apq.py`) and a hash-only GET for the replay — no new
+`GraphQLClient` method. The mock server gains an `apq_serve_over_get` flag
+(default False = safe) that, when True, resolves a persisted-query hash from the
+same APQ cache the POST route populates and serves the operation's data over GET.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `apq-get`
+
+**What it detects:**
+A server that, after a persisted query is registered over POST, *executes* the
+same operation when it is replayed as a hash-only `GET`
+(`?extensions={persistedQuery:{version,sha256Hash}}`). The check confirms APQ is
+enabled (POST hash-only lookup → `PersistedQueryNotFound`), registers a benign
+`{ __typename }` so a known hash exists, then issues the GET; it fires only when
+the GET returns `data` rather than `PersistedQueryNotFound`.
+
+**Why it's genuinely new:**
+`apq` (registration abuse) and `apq-collision` (hash-integrity poisoning) both
+probe POST only. `apq-get` is the first check to test the APQ GET transport — a
+distinct, higher-value class (cacheable CSRF + cache-flooding) that the
+content-type-based `csrf`/`csrf-multipart` checks cannot see because APQ keys the
+operation by hash, not body. It is strictly differential: a server that honours
+APQ over POST but returns `PersistedQueryNotFound` over GET (the secure default)
+and a server without APQ both produce no finding, and the finding depends on
+actual GET *execution*, not merely on a config flag (covered by a dedicated
+unpopulated-cache regression test).
+
+**Competitor gap:**
+graphql-cop / graphw00f probe APQ on a single POST transport; they do not replay
+a persisted query over a cacheable GET to detect cross-site / cache-poisoning
+execution. enshroud now ships automated detection of the APQ-over-GET transport
+in the H1-markdown / JSON pipeline.
+
+**References:**
+- Apollo APQ specification (hash-only lookup, GET transport for CDN cacheability)
+- OWASP GraphQL Cheat Sheet: CSRF / "GET requests should not perform mutations"
+- PortSwigger Web Security Academy: GraphQL CSRF over GET
+
+### Backlog after this rotation
+
+Directions 1–20 plus `verbose-errors` and `graphql-ide` are all shipped (and
+`apq-collision` from R25, documented in the R26 note). No pre-written directions
+remain; future rotations should continue the research-lap pattern. Open ideas not
+yet implemented and worth considering next: GraphQL response-cache poisoning via
+alias/normalisation (multi-request, stateful) and per-event subscription
+re-authorization over WebSocket (timing-dependent, inside the opt-in `websocket`
+check). Note: subscription *flooding* / subscription-dos has now been
+deterministically rejected four times (R18, R19, R22, R27) as architecturally
+incompatible — do not re-suggest it without a deterministic single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1070,5 +1163,6 @@ stateful) and per-event subscription re-authorization over WebSocket
 | 18 | `depth-bypass` ✅ | `--checks depth-bypass` | MEDIUM | S | Yes (shipped) |
 | — | `apq-collision` ✅ | `--checks apq-collision` | MEDIUM–HIGH | S | Yes (shipped, R25) |
 | 19 | `trace-exposure` ✅ | `--checks trace-exposure` | LOW | S | Yes (shipped, R26) |
+| 20 | `apq-get` ✅ | `--checks apq-get` | MEDIUM | S | Yes (shipped, R27) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
