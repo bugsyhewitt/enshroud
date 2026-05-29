@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -65,7 +65,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --target URL            GraphQL endpoint URL (required)
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
-                        Choices: introspection, depth-dos, alias-batch,
+                        Choices: introspection, introspection-bypass,
+                                 depth-dos, alias-batch,
                                  batch-array, field-dup, fragment-cycle,
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
@@ -188,6 +189,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | Check | Category | Severity | Description |
 |---|---|---|---|
 | `introspection` | `introspection_enabled` | MEDIUM | Schema enumeration via introspection |
+| `introspection-bypass` | `introspection_filter_bypass` | MEDIUM | Standard `__schema` introspection denied, but the schema still leaks via the `__type` root field or the GET transport — a naive `__schema`-keyword / POST-only block bypass |
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
@@ -461,6 +463,46 @@ directives the executor evaluates on the resolved field), never by matching the
 query text, field name, or response key. Any deny-list or WAF that inspects
 GraphQL field names must canonicalise aliases back to their underlying field
 before deciding.
+
+### Introspection recovered via a naive-filter bypass
+
+The `introspection-bypass` check is the companion to `introspection`. The
+`introspection` check sends one probe — a standard `{ __schema { ... } }` query
+over the default POST/`application/json` transport — and, if that single probe
+is rejected, concludes the schema is protected. A very common production
+misconfiguration **blocks exactly that one probe while leaking the schema
+through an equivalent technique**, because the block is a naive guard rather than
+a proper executor-level "disable introspection" option:
+
+- **`__schema`-keyword deny-list.** The guard string-matches the literal
+  `__schema` token, but never inspects `__type`. A
+  `{ __type(name: "Query") { name kind fields { name } } }` query is a full
+  introspection root field in its own right, contains no `__schema` token, slips
+  past the filter, and leaks the type graph field-by-field.
+- **POST-only block.** The guard is wired into the POST/JSON route handler only.
+  The *same* `{ __schema { ... } }` query issued over `GET` (document in the
+  `query` URL parameter) is served by a different code path that never runs the
+  guard.
+
+The check is strictly **differential**, so it never overlaps with
+`introspection` and never false-positives on a hardened server. It first
+confirms the standard POST `__schema` probe is **denied** (if standard
+introspection works, the check stays silent and defers to `introspection`), then
+tries the two alternate techniques. A **MEDIUM** `introspection_filter_bypass`
+finding fires only when the standard probe was denied *and* an alternate
+technique returns a non-null `__schema` / `__type`. A server that disables
+introspection *properly* (every transport, every root meta-field) denies all
+three probes and produces no finding. Every probe is read-only.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks introspection,introspection-bypass
+```
+
+Remediate by disabling introspection at the executor/validation layer — a single
+rule that rejects every `__schema` *and* `__type` meta-field on *every* transport
+— rather than string-matching `__schema` or guarding only the POST handler. Most
+GraphQL servers expose a single configuration flag for this.
 
 ### CSRF via alternate simple-request transports
 

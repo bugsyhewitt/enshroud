@@ -712,6 +712,94 @@ the opt-in `websocket` check), and regex-based introspection-filter bypass
 
 ---
 
+## Phase 2 Rotation 22 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation — a **subscription-flooding
+rate-limit check** and a **batching-amplification check** — were both verified
+against the actual codebase and rejected as already-covered or already-rejected:
+
+- **Batching amplification** is fully shipped across `alias-batch`
+  (`alias_batching`, breadth within one operation), `batch-array`
+  (`array_batching`, transport-level JSON-array operation batching — the
+  canonical rate-limit-bypass vector, HIGH), and `field-dup`
+  (`field_duplication_dos`, repetition axis). Re-implementing it would duplicate
+  existing checks.
+- **Subscription flooding** was explicitly evaluated and deferred in Rotations 18
+  and 19 (and again here): asserting "many subscriptions bypass a rate limit"
+  reliably requires modelling the rate limiter's wall-clock window, so it is
+  timing-dependent and non-deterministic against a mock — the opposite of every
+  other enshroud check, which fires on a single deterministic signal.
+
+This rotation followed the research-lap pattern: read every check, the client
+transport, the CLI registry, and the mock server; ran a fresh gap analysis; and
+implemented the highest-value genuinely-unimplemented vector that *is*
+deterministic, read-only, and few-request.
+
+### Candidates evaluated this rotation
+
+- **Subscription flooding** — non-deterministic (timing/window). Rejected again.
+- **Batching amplification** — already shipped (`alias-batch` / `batch-array` /
+  `field-dup`). Rejected.
+- **Naive introspection-filter bypass** — **selected.** The R21 backlog listed
+  "regex-based introspection-filter bypass" as an open idea and deferred it as
+  "requires modelling a specific buggy filter." But two variants are fully
+  deterministic and need no fragile filter modelling: a `__type`-root-field probe
+  (defeats a `__schema`-keyword deny-list) and a `__schema`-over-GET probe
+  (defeats a POST-only block). Both are differential against the *standard*
+  probe, so they never duplicate the existing `introspection` check.
+
+### 16. Introspection recovered via a naive-filter bypass ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 22). Check `introspection-bypass`
+(`src/enshroud/checks/introspection_bypass.py`), category
+`introspection_filter_bypass` (MEDIUM), **included in `--checks all`**. Strictly
+differential and read-only. Reuses the existing `GraphQLClient.query` (POST) and
+`GraphQLClient.get_query` (GET) transports — no new client method needed.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `introspection-bypass`
+
+**What it detects:**
+The existing `introspection` check sends exactly one probe — a standard
+`{ __schema { ... } }` query over POST/`application/json` — and reports nothing
+if it is rejected. A common production misconfiguration blocks that one probe
+while leaking the schema through an equivalent technique, because the block is a
+naive guard, not an executor-level disable:
+- **`__schema`-keyword deny-list** — defeated by `{ __type(name: "Query") { ... } }`,
+  a distinct introspection root field that contains no `__schema` token.
+- **POST-only block** — defeated by the same `__schema` query over GET.
+
+**Why it's genuinely new:**
+It fills the gap *between* "introspection enabled" (owned by the `introspection`
+check) and "introspection properly disabled" (no finding from anyone): the
+in-between state where the off-switch is a leaky guard. The check first confirms
+the standard POST `__schema` probe is **denied** (so it never duplicates
+`introspection`), then fires only when an alternate technique returns non-null
+`__schema` / `__type` data. A server that disables introspection on every
+transport and every root meta-field denies all three probes and produces no
+finding.
+
+**Competitor gap:**
+graphql-cop / graphw00f probe introspection on a single transport with a single
+query shape; they do not differentially test `__type` vs `__schema` or POST vs
+GET to detect a *partial* block. enshroud ships automated detection of the
+leaky-filter state in the H1-markdown / JSON pipeline.
+
+**References:**
+- OWASP GraphQL Cheat Sheet: "Introspection" (disable at the executor layer)
+- PortSwigger Web Security Academy: GraphQL introspection / alternate techniques
+- HackerOne / blog disclosures of `__schema`-keyword WAF filters bypassed via `__type`
+
+### Backlog after this rotation
+
+Directions 1–16 plus `verbose-errors` and `graphql-ide` are all shipped. No
+pre-written directions remain; future rotations should continue the research-lap
+pattern. Open ideas not yet implemented and worth considering next: GraphQL
+response-cache poisoning via alias/normalisation (multi-request, stateful) and
+per-event subscription re-authorization over WebSocket (timing-dependent, inside
+the opt-in `websocket` check).
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -733,5 +821,6 @@ the opt-in `websocket` check), and regex-based introspection-filter bypass
 | 14 | `defer-abuse` ✅ | `--checks defer-abuse` | MEDIUM | S | Yes (shipped) |
 | — | `graphql-ide` ✅ | `--checks graphql-ide` | MEDIUM | S | Yes (shipped) |
 | 15 | `csrf-multipart` ✅ | `--checks csrf-multipart` | HIGH | S | Yes (shipped) |
+| 16 | `introspection-bypass` ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
