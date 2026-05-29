@@ -1,6 +1,7 @@
 """FastAPI mock GraphQL server for testing."""
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -50,6 +51,7 @@ def create_app(
     apq_enabled: bool = False,
     apq_require_auth: bool = False,
     apq_rate_limit: int | None = None,
+    apq_verify_hash: bool = False,
     schema_fields: list[str] | None = None,
     injectable_arg: dict[str, Any] | None = None,
     set_cookies: list[str] | None = None,
@@ -95,6 +97,11 @@ def create_app(
         "apq_enabled": apq_enabled,
         "apq_require_auth": apq_require_auth,
         "apq_rate_limit": apq_rate_limit,
+        # Whether the APQ layer verifies sha256(query) == sha256Hash before
+        # storing a registration (the spec-compliant behaviour). When False
+        # (default) the server trusts the client-supplied hash, modelling the
+        # cache-poisoning vulnerability the apq-collision check detects.
+        "apq_verify_hash": apq_verify_hash,
         # Real top-level fields, used by the schema-fuzz oracle simulation.
         "schema_fields": schema_fields,
         # Injectable argument simulation, used by the injection check.
@@ -610,7 +617,34 @@ def create_app(
                     _add_cors(response)
                     return response
             else:
-                # Registration request
+                # Registration request.
+                # Spec-compliant servers verify sha256(query) == sha256Hash
+                # before storing, rejecting mismatches with
+                # PersistedQueryHashMismatch. The default (verify off) models
+                # the cache-poisoning bug the apq-collision check detects.
+                if cfg["apq_verify_hash"]:
+                    real_hash = hashlib.sha256(
+                        incoming_query.encode("utf-8")
+                    ).hexdigest()
+                    if real_hash != client_hash:
+                        response = JSONResponse(
+                            status_code=400,
+                            content={
+                                "errors": [
+                                    {
+                                        "message": (
+                                            "provided sha does not match query"
+                                        ),
+                                        "extensions": {
+                                            "code": "PERSISTED_QUERY_HASH_MISMATCH"
+                                        },
+                                    }
+                                ]
+                            },
+                        )
+                        _add_cors(response)
+                        return response
+
                 if cfg["apq_require_auth"]:
                     auth = request.headers.get("authorization", "")
                     if not auth:
