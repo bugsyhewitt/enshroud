@@ -66,7 +66,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --scope-file FILE       Path to scope file (required)
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, introspection-bypass,
-                                 depth-dos, alias-batch,
+                                 depth-dos, depth-bypass, alias-batch,
                                  batch-array, field-dup, fragment-cycle,
                                  directive-abuse, defer-abuse, field-oracle,
                                  auth-alias,
@@ -191,6 +191,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `introspection` | `introspection_enabled` | MEDIUM | Schema enumeration via introspection |
 | `introspection-bypass` | `introspection_filter_bypass` | MEDIUM | Standard `__schema` introspection denied, but the schema still leaks via the `__type` root field, the GET transport, or a named fragment spread — a naive `__schema`-keyword / POST-only / top-level-selection block bypass |
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
+| `depth-bypass` | `depth_limit_bypass` | MEDIUM | Query depth limit is enforced on flat queries but bypassed by hiding the deep nesting inside a named fragment — the limiter counts the operation body without expanding fragment spreads |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
@@ -278,6 +279,44 @@ To remediate, enforce a query-complexity / cost limit that counts repeated
 selections and fragment spreads, and cap the number of fragment spreads per
 operation, rejecting operations whose computed cost exceeds a fixed budget before
 execution.
+
+### Query depth-limit bypass via fragments
+
+The `depth-bypass` check is the companion to `depth-dos`. Where `depth-dos`
+fires only when a server enforces **no** depth limit at all, `depth-bypass`
+covers the complementary, higher-value class: a server that *does* enforce a
+depth limit but computes that depth from the literal operation body without first
+expanding fragment spreads. Because GraphQL fragments are inlined at execution,
+an attacker can hide the expensive nesting inside a named fragment so the
+operation body looks shallow to the naive counter, then spread that fragment to
+reach an effective depth far beyond the advertised cap — the documented
+depth-limiter bypass.
+
+Detection is strictly differential and read-only (both probes are built only
+from `__typename`, no schema knowledge required):
+
+1. **Confirm the limit is enforced** — a flat query nested ~20 levels deep is
+   rejected with a depth / complexity error.
+2. **Confirm the limit is bypassable** — the identical nesting wrapped inside a
+   named fragment, reached via a single spread
+   (`query { ...D } fragment D on Query { … }`), is accepted and executed.
+
+A finding fires (**MEDIUM**) only when step 1 rejects *and* step 2 is accepted.
+A server with no depth limit (already covered by `depth-dos`), or one that
+correctly expands fragments before counting, produces no finding — so
+`depth-bypass` never double-counts with `depth-dos` and never false-positives on
+a hardened endpoint. It is part of the default `--checks all`.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks depth-bypass
+```
+
+To remediate, compute query depth (and complexity / cost) on the fully expanded
+operation — resolving all fragment spreads before measuring — rather than on the
+raw operation body. Most maintained validation rules (e.g. graphql-js depth /
+cost analysis) already inline fragments; ensure custom or string-based limiters
+do the same.
 
 ### Cyclic fragments
 

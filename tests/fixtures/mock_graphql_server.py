@@ -36,6 +36,7 @@ _IDE_HTML: dict[str, str] = {
 def create_app(
     introspection_enabled: bool = True,
     depth_limit: int | None = None,
+    depth_limit_expands_fragments: bool = True,
     batch_limit: int | None = None,
     suggestions_enabled: bool = True,
     dangerous_mutations: list[str] | None = None,
@@ -67,6 +68,15 @@ def create_app(
     cfg = {
         "introspection_enabled": introspection_enabled,
         "depth_limit": depth_limit,
+        # Whether the depth limiter expands fragment spreads before measuring
+        # depth, used by the depth-bypass check. When True (default, spec-correct)
+        # the server inlines fragment definitions into the operation before
+        # counting nesting, so a fragment-wrapped deep query is rejected just like
+        # a flat one. When False it models the documented buggy limiter that
+        # counts only the literal operation body: a flat deep query is rejected,
+        # but the same nesting hidden inside a named fragment (reached via a single
+        # `...Spread` at the operation top level) slips past the cap and executes.
+        "depth_limit_expands_fragments": depth_limit_expands_fragments,
         "batch_limit": batch_limit,
         "suggestions_enabled": suggestions_enabled,
         "dangerous_mutations": dangerous_mutations or [],
@@ -747,7 +757,24 @@ def create_app(
 
         # Check depth limit
         if cfg["depth_limit"] is not None:
-            depth = _query_depth(query)
+            if cfg["depth_limit_expands_fragments"]:
+                # Spec-correct limiter: inline fragment definitions into the
+                # operation body before measuring depth, so fragment-hidden
+                # nesting counts the same as inline nesting. We approximate
+                # inlining by measuring depth over the *whole* document text
+                # (operation body + every fragment definition), which is what
+                # `_query_depth` already does — a fragment-wrapped deep query has
+                # its full nesting present in the fragment body and is counted.
+                depth = _query_depth(query)
+            else:
+                # Buggy limiter: count depth on the literal operation body only,
+                # never resolving fragment spreads. Strip out fragment
+                # *definitions* (`fragment X on T { ... }`) so the deep nesting
+                # they carry is invisible to the counter — the depth-bypass class.
+                operation_body = re.sub(
+                    r"fragment\s+\w+\s+on\s+\w+\s*\{.*\}", "", query, flags=re.DOTALL
+                )
+                depth = _query_depth(operation_body)
             if depth > cfg["depth_limit"]:
                 response = JSONResponse(
                     content={

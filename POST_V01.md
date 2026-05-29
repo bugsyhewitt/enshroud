@@ -885,6 +885,80 @@ the opt-in `websocket` check).
 
 ---
 
+## Phase 2 Rotation 24 — research lap + fresh gap analysis
+
+The suggested direction for this rotation was a **persisted-query size-limit
+bypass** or a **query-depth limit bypass**. Both candidates were assessed against
+the *actual* codebase (POST_V01.md is intentionally treated as possibly stale)
+before implementing:
+
+- **Persisted-query (APQ) size-limit bypass** — the `apq` check
+  (`src/enshroud/checks/apq.py`) already ships three probes: APQ-enabled
+  detection (`PersistedQueryNotFound`), unauthenticated registration
+  (`apq_unrestricted_registration`), and missing rate-limiting
+  (`apq_no_rate_limit`). The "size-limit bypass" framing (registering an
+  oversized query via the hash path to dodge a body-size cap) is incremental on
+  top of the already-shipped unrestricted-registration finding and would
+  duplicate its signal. Rejected as already-substantially-covered.
+- **Query-depth limit bypass** — the `depth-dos` check
+  (`src/enshroud/checks/depth_dos.py`) only fires when the server enforces **no**
+  depth limit at all; it does **not** test whether an *enforced* depth limit can
+  be **bypassed**. The canonical PortSwigger / OWASP depth-limiter bypass —
+  hiding the deep nesting inside a named fragment so a counter that measures the
+  literal operation body (without expanding fragment spreads) sees a shallow
+  query — had **zero prior coverage**. **Selected.**
+
+### 18. Query depth-limit bypass via fragment expansion ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 24). New check `depth-bypass`
+(`src/enshroud/checks/depth_bypass.py`), category `depth_limit_bypass` (MEDIUM),
+**included in `--checks all`**. Uses the existing `GraphQLClient.query` POST
+transport — no new client method. The mock server gains a
+`depth_limit_expands_fragments` flag (default True = spec-correct) that, when
+False, models a limiter counting only the literal operation body.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `depth-bypass`
+
+**What it detects:**
+A server that enforces a query-depth limit on a flat deeply-nested query but
+*accepts* the identical nesting when it is moved into a named fragment reached via
+a single top-level spread (`query { ...D } fragment D on Query { … }`). The depth
+limiter counts the operation body without inlining fragment spreads, so the deep
+work hidden in the fragment slips past the cap and executes.
+
+**Why it's genuinely new:**
+`depth-dos` only flags the *absence* of a depth limit (LOW). `depth-bypass` flags
+a *present-but-bypassable* limit (MEDIUM) — a distinct, higher-value class. It is
+strictly differential: it fires only when the flat probe is rejected with a
+depth/complexity error *and* the fragment-wrapped probe is accepted, so a server
+with no limit (caught by `depth-dos`) and a server that correctly expands
+fragments before counting both produce no finding. No double-count, no
+false-positive on a hardened endpoint. Both probes are built from `__typename`
+only — read-only, no schema knowledge required.
+
+**Competitor gap:**
+graphql-cop / graphw00f probe a single deep query shape to test for the presence
+of a depth limit; they do not test whether an enforced limit is bypassable via
+fragment-hidden nesting. enshroud now ships automated detection of the
+fragment-expansion depth-limiter bypass in the H1-markdown / JSON pipeline.
+
+**References:**
+- PortSwigger Web Security Academy: GraphQL DoS / query-depth limiting
+- OWASP GraphQL Cheat Sheet: "Query limiting (depth & amount)" — measure depth on
+  the expanded operation with fragments resolved
+- graphql-js depth/cost analysis (fragments inlined before measurement)
+
+### Backlog after this rotation
+
+Directions 1–18 plus `verbose-errors` and `graphql-ide` are all shipped. No
+pre-written directions remain; future rotations should continue the research-lap
+pattern. Open ideas not yet implemented and worth considering next: GraphQL
+response-cache poisoning via alias/normalisation (multi-request, stateful) and
+per-event subscription re-authorization over WebSocket (timing-dependent, inside
+the opt-in `websocket` check).
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -908,5 +982,6 @@ the opt-in `websocket` check).
 | 15 | `csrf-multipart` ✅ | `--checks csrf-multipart` | HIGH | S | Yes (shipped) |
 | 16 | `introspection-bypass` ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped) |
 | 17 | `introspection-bypass` (fragment-spread) ✅ | `--checks introspection-bypass` | MEDIUM | S | Yes (shipped, extends #16) |
+| 18 | `depth-bypass` ✅ | `--checks depth-bypass` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
