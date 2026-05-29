@@ -524,6 +524,92 @@ mutation rate-limit bypass weaponisation guidance.
 
 ---
 
+## Phase 2 Rotation 19 — research lap + fresh gap analysis
+
+The pre-written backlog (directions 1–13 plus `verbose-errors`) is fully shipped.
+This rotation followed the research-lap pattern: read every check, the client
+transport, and the mock server; ran a fresh gap analysis against the OWASP
+GraphQL Cheat Sheet, the PortSwigger GraphQL labs, and the 2024–2026 disclosure
+corpus; and implemented the highest-value genuinely-unimplemented vector.
+
+### Candidates evaluated this rotation (and why most were rejected)
+
+- **Subscription flooding** (R18 open idea) — timing-dependent and non-deterministic;
+  asserting "many subscriptions bypass a rate limit" reliably against a mock
+  requires modelling the rate limiter's wall-clock window. Same reason R18 rejected
+  it. Deferred.
+- **`__typename` / type-name enumeration when introspection disabled** — already
+  partially covered by `field-oracle` (field names) and `schema-fuzz` (top-level
+  fields). Incremental, as R18 noted.
+- **Per-event subscription re-authorization over WebSocket** (R18 open idea) —
+  belongs inside the opt-in `websocket` check and is timing/ordering dependent;
+  hard to assert deterministically. Deferred.
+- **GraphQL response-cache poisoning via alias/normalisation** (R18 open idea) —
+  high value but multi-request and stateful; needs a richer cache model than a
+  single deterministic probe. Deferred to a future rotation.
+- **Incremental delivery (`@defer` / `@stream`) abuse** — **zero prior coverage.
+  Selected.** Deterministic, read-only, single-request, and a genuinely distinct
+  axis (connection-holding, not compute).
+
+### 14. Incremental delivery (`@defer` / `@stream`) abuse ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 19). Check `defer-abuse`
+(`src/enshroud/checks/defer_abuse.py`), category `incremental_delivery_dos`
+(MEDIUM), **included in `--checks all`**. Two read-only `__typename`-anchored
+probes: `@defer` on an inline fragment (`{ ... @defer { __typename } }`, the only
+legal `@defer` location) and `@stream` on a non-list field
+(`{ __typename @stream }`, a deliberate location violation). Fires only when the
+server **accepts** a probe (no unknown-directive / directive-location / disabled
+error); a feature-disabled server rejects both and produces no finding. Never
+mutates.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `defer-abuse`
+
+**What it detects:**
+Whether GraphQL incremental delivery is exposed. `@defer`/`@stream` let a server
+split one query's results across multiple `multipart/mixed` payloads over a
+single long-lived response. This is a **distinct attack surface** from every
+existing check: the DoS axes (`depth-dos` = nesting, `alias-batch` = breadth,
+`field-dup` = repetition, `fragment-cycle` = recursion) amplify *compute*, while
+incremental delivery amplifies *connection holding* — each deferred fragment /
+streamed item keeps a streaming response open and frames an additional payload.
+It is **not** the `directive-abuse` probe, which stacks the built-in `@skip`
+directive and sends an *undefined* directive to test validation; here `@defer`/
+`@stream` are *real, executable* directives whose acceptance means a functional
+incremental-delivery pipeline is enabled.
+
+**Attack value:**
+Stacking many `@defer` fragments (or `@stream`-ing a large list) in one small
+request holds connections/workers open and multiplies response-framing cost — a
+documented resource-amplification class with fixes shipped in the Apollo Router
+and graphql-js incremental-delivery implementations. Servers that authorize once
+at operation start (rather than per deferred payload) can additionally leak data
+whose authorization context changed before the deferred part resolved — the
+incremental-delivery analogue of the WebSocket per-event re-authorization gap.
+
+**Competitor gap:**
+graphql-cop, graphw00f, and Clairvoyance do not probe incremental-delivery
+directives; InQL requires manual replay. enshroud ships automated `@defer`/
+`@stream` exposure detection in the H1-markdown / JSON pipeline.
+
+**References:**
+- GraphQL incremental-delivery spec (`@defer` / `@stream`)
+- Apollo Router incremental-delivery resource-amplification advisories
+- OWASP GraphQL Cheat Sheet: "Query limiting / cost analysis"
+- PortSwigger Web Security Academy: GraphQL DoS
+
+### Backlog after this rotation
+
+Directions 1–14 plus `verbose-errors` are all shipped. No pre-written directions
+remain; future rotations should continue the research-lap pattern. Open ideas not
+yet implemented and worth considering next: GraphQL response-cache poisoning via
+alias/normalisation (multi-request, stateful), per-event subscription
+re-authorization over WebSocket (timing-dependent, inside the opt-in `websocket`
+check), and a deterministic harness for subscription/batch rate-limit-bypass
+weaponisation guidance.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -542,5 +628,6 @@ mutation rate-limit bypass weaponisation guidance.
 | 12 | `fragment-cycle` ✅ | `--checks fragment-cycle` | MEDIUM | S | Yes (shipped) |
 | — | `verbose-errors` ✅ | `--checks verbose-errors` | LOW–MEDIUM | S | Yes (shipped) |
 | 13 | `auth-alias` ✅ | `--checks auth-alias` | HIGH | S | Yes (shipped) |
+| 14 | `defer-abuse` ✅ | `--checks defer-abuse` | MEDIUM | S | Yes (shipped) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
