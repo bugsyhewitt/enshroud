@@ -1768,3 +1768,48 @@ no `pq-enum` ID, no name registry hit) return an error rather than a spurious
 persisted-operation checks.
 
 **Severity:** MEDIUM — **Effort:** S — **Check name:** `operation-name-enum`
+
+---
+
+## Phase 2 Rotation 34 — pivot from suggested directions
+
+The two suggested directions for this rotation were `persisted-query-brute`
+(brute-force persisted query hashes/IDs against a target GraphQL endpoint) and
+`depth-limit-bypass` (bypass query depth limits via aliases or inline fragments).
+
+- **depth-limit-bypass** — **rejected, already shipped.** The fragment-expansion
+  depth-bypass class is fully covered by the `depth-bypass` check
+  (`src/enshroud/checks/depth_bypass.py`, category `depth_limit_bypass`, MEDIUM,
+  shipped in R24). The alias/inline-fragment variants would either duplicate
+  that signal (any nested selection — aliased or inline-fragment-wrapped —
+  inside a named fragment is already counted) or expand into the
+  field-duplication axis already covered by `field-dup`.
+
+- **persisted-query-brute** — **selected as a distinct, complementary check.**
+  The existing `pq-enum` (R29) is by construction a **signal-only** detector:
+  three guessable IDs (`1`, `2`, `100`) across three transports, returns on the
+  first hit. Its job is to report *that* an ID-keyed store exists, not *what*
+  it contains. A persisted-query brute force walks a bounded ID range and
+  surfaces the **actual catalogue** of operation IDs an unauthenticated
+  attacker can replay — the same relationship `schema-fuzz` has to
+  `field-oracle`: the cheap signal check confirms the oracle exists, the
+  opt-in active check turns the oracle into an enumeration primitive.
+
+### 26. Persisted-query brute force over an ID-keyed store ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 34). New **opt-in** check `pq-brute`
+(`src/enshroud/checks/pq_brute.py`), category
+`persisted_query_id_brute_force` (HIGH), **excluded from `--checks all`** (sends
+up to `BRUTE_MAX_PROBES = 500` requests per invocation — the same active-probe
+gating posture as `schema-fuzz` and `injection`). Walks integer IDs `1..200` by
+default via the `extensions.persistedQuery.id` transport with no `sha256Hash`
+(so probes cannot collide with a real APQ registration) and no `query` body
+(read-only contract identical to `pq-enum`). Pacing shared with `schema-fuzz`
+via the existing `--fuzz-rate` flag. Finding lists every enumerated ID (capped
+at 100 in the payload so a wildly permissive store does not produce a
+multi-megabyte report), `probes_sent`, and the walked `id_range`. Differential
+against the APQ family (no hash on the wire), against `pq-enum` (active range
+walk vs. three-probe signal), and against `operation-name-enum` (no
+`operationName` on the wire).
+
+**Severity:** HIGH — **Effort:** S — **Check name:** `pq-brute` (opt-in)
