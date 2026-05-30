@@ -30,6 +30,7 @@ ALL_CHECKS = [
     "directive-enforcement",
     "defer-abuse",
     "field-oracle",
+    "suggestion-leak",
     "auth-alias",
     "verbose-errors",
     "mutation-enum",
@@ -87,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
             "depth-bypass, alias-batch, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, "
             "directive-enforcement, defer-abuse, "
-            "field-oracle, auth-alias, verbose-errors, mutation-enum, "
+            "field-oracle, suggestion-leak, auth-alias, verbose-errors, mutation-enum, "
             "mutation-allowlist-bypass, cors, csrf, "
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, pq-enum, trace-exposure, federation, all. "
@@ -202,6 +203,7 @@ async def run_checks(
         pq_enum,
         query_get,
         schema_fuzz,
+        suggestion_leak,
         trace_exposure,
         websocket,
     )
@@ -220,6 +222,7 @@ async def run_checks(
         "directive-enforcement": directive_enforcement.check,
         "defer-abuse": defer_abuse.check,
         "field-oracle": field_oracle.check,
+        "suggestion-leak": suggestion_leak.check,
         "auth-alias": auth_alias.check,
         "verbose-errors": debug_errors.check,
         "mutation-enum": mutation_enum.check,

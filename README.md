@@ -70,7 +70,7 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  batch-array, field-dup, fragment-cycle,
                                  directive-abuse, directive-enforcement,
                                  defer-abuse, field-oracle,
-                                 auth-alias,
+                                 suggestion-leak, auth-alias,
                                  verbose-errors, mutation-enum,
                                  mutation-allowlist-bypass, cors, csrf,
                                  csrf-multipart, query-get, cookie-posture,
@@ -205,6 +205,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `directive-enforcement` | `directive_enforcement_bypass` | MEDIUM | Server returns a field whose selection carried `@skip(if: true)` or `@include(if: false)` — built-in directive enforcement is broken at the executor layer (spec §3.13), so custom schema directives (`@auth` / `@cost` / `@cacheControl`) layered on the same evaluation pass are likely silently skipped too |
 | `defer-abuse` | `incremental_delivery_dos` | MEDIUM | Incremental delivery (`@defer`/`@stream`) exposed — connection-holding DoS amplification and deferred-payload authorization staleness |
 | `field-oracle` | `field_suggestion_oracle` | LOW | Field name leakage via error suggestions |
+| `suggestion-leak` | `suggestion_oracle_leak` | LOW | `Did you mean` suggestions leak on the **argument-name** axis (`KnownArgumentNamesRule`, via `__type(naem: …)`) and the **type-name** axis (`KnownTypeNamesRule`, via `... on Queryy`) — the two graphql-js validation suggestion oracles `field-oracle` does not cover. Catches the common partial-hardening misconfiguration where a `formatError` regex strips `Did you mean` from `Cannot query field` errors but leaves `Unknown argument` / `Unknown type` suggestions untouched, leaking input argument names and type names without introspection. |
 | `auth-alias` | `authz_bypass_via_alias` | HIGH | Field denied by name resolves when aliased — authorization keyed on field name / response key instead of the resolved field |
 | `verbose-errors` | `verbose_error_disclosure` | LOW–MEDIUM | Development/debug error mode leaking stack traces, source paths, exception classes, SQL, internal hosts, or framework versions |
 | `mutation-enum` | `dangerous_mutation_exposed` | HIGH | Dangerous mutations in public schema |
