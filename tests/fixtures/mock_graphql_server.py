@@ -72,6 +72,7 @@ def create_app(
     mutation_arg_signature: dict[str, list[dict[str, Any]]] | None = None,
     op_type_confusion: bool = False,
     directive_enforcement_bypass: bool = False,
+    arg_type_suggestions_enabled: bool | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -275,6 +276,20 @@ def create_app(
         # the directives and returns the gated field anyway, modelling a broken
         # executor whose directive-evaluation stage is skipped before resolution.
         "directive_enforcement_bypass": directive_enforcement_bypass,
+        # Argument-name and type-name suggestion oracles (used by the
+        # `suggestion-leak` check). Models the documented partial-hardening
+        # misconfiguration: a `formatError` regex strips `Did you mean` from
+        # `Cannot query field` errors (so `suggestions_enabled` may be False on
+        # the field axis) while leaving `Unknown argument` and `Unknown type`
+        # messages untouched. When None (the default) this axis tracks the
+        # global `suggestions_enabled` switch — i.e. either all axes leak
+        # or none. Tests that exercise the partial-hardening case set this
+        # flag explicitly to True with `suggestions_enabled=False`.
+        "arg_type_suggestions_enabled": (
+            arg_type_suggestions_enabled
+            if arg_type_suggestions_enabled is not None
+            else suggestions_enabled
+        ),
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -1157,6 +1172,36 @@ def create_app(
                 _add_cors(response)
                 return response
             response = JSONResponse(content={"data": {"__typename": "Query"}})
+            _add_cors(response)
+            return response
+
+        # ── Argument-name suggestion-oracle probe (suggestion-leak check) ──
+        # Probe shape: `{ __type(naem: "Query") { name } }`. graphql-js's
+        # KnownArgumentNamesRule emits `Unknown argument "naem" on field
+        # "Query.__type". Did you mean "name"?` at validation time, **before**
+        # the introspection-execution gate fires. Matched *before* the
+        # introspection branch so the probe is rejected at validation rather
+        # than answered with a real introspection payload (which would mask the
+        # oracle and prevent the differential signal).
+        if re.search(r"__type\s*\(\s*naem\s*:", query):
+            msg = "Unknown argument \"naem\" on field \"Query.__type\"."
+            if cfg["arg_type_suggestions_enabled"]:
+                msg += " Did you mean \"name\"?"
+            response = JSONResponse(content={"errors": [{"message": msg}]})
+            _add_cors(response)
+            return response
+
+        # ── Type-name suggestion-oracle probe (suggestion-leak check) ──────
+        # Probe shape: `{ ... on Queryy { __typename } }`. graphql-js's
+        # KnownTypeNamesRule emits `Unknown type "Queryy". Did you mean
+        # "Query"?` at validation time. Matched as a literal `Queryy` token
+        # so it cannot collide with the real `Query` root type. Placed before
+        # the introspection branch to mirror the argument-name handler above.
+        if re.search(r"\.\.\.\s*on\s+Queryy\b", query):
+            msg = "Unknown type \"Queryy\"."
+            if cfg["arg_type_suggestions_enabled"]:
+                msg += " Did you mean \"Query\"?"
+            response = JSONResponse(content={"errors": [{"message": msg}]})
             _add_cors(response)
             return response
 

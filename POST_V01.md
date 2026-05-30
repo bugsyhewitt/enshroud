@@ -1558,6 +1558,138 @@ without a genuinely new, deterministic, single-signal design.
 
 ---
 
+## Phase 2 Rotation 32 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were a **subscription-dos**
+check and a **field-suggestion-leak** check, with instructions to verify which
+(if either) is already shipped and pick the next-best gap if both are
+infeasible or overlap.
+
+- **subscription-dos** — **rejected, architecturally incompatible.** Already
+  deterministically rejected four times (R18, R19, R22, R27) and noted in
+  every backlog since: a "many subscriptions bypass a rate limit" assertion
+  requires modelling the rate limiter's wall-clock window, so the check is
+  timing-dependent and non-deterministic against a mock — the opposite of
+  every other enshroud check, which fires on a single deterministic signal.
+
+- **field-suggestion-leak** — **rejected as framed, redesigned and selected.**
+  The literal framing (probe for "Did you mean" field-name suggestions in
+  validation errors) is fully shipped as the v0.1 `field-oracle` check
+  (`src/enshroud/checks/field_oracle.py`, `field_suggestion_oracle`, LOW),
+  and additionally exploited as an enumeration primitive by the opt-in
+  `schema-fuzz` check. Re-implementing the **selection-set field-name** axis
+  would duplicate `field-oracle`'s signal.
+
+  The redesigned, defensible vector that *does* survive — **the two
+  uncovered suggestion-oracle axes**: argument-name (`KnownArgumentNamesRule`)
+  and type-name in fragment conditions (`KnownTypeNamesRule`) — is genuinely
+  new and fits the architecture cleanly. graphql-js (and every executor that
+  mirrors its validation rules) emits **three** distinct `didYouMean` oracles
+  at validation time; `field-oracle` covers only the first. The other two
+  leak distinct schema metadata (input argument names, type names) through
+  distinct validation rules, and the documented partial-hardening
+  misconfiguration — a `formatError` regex that strips `Did you mean` from
+  `Cannot query field` errors only — leaves them wide open while
+  `field-oracle` returns no finding.
+
+### Candidates evaluated this rotation
+
+- **subscription-dos** — non-deterministic (timing/window). Rejected for the
+  fifth time.
+- **field-suggestion-leak (selection-set field-name axis)** — already shipped
+  as `field-oracle`. Rejected.
+- **suggestion-leak (argument-name + type-name axes)** — **selected.** Two
+  universal probes (`__type(naem: "Query")` and `... on Queryy`) that exist
+  on every GraphQL server regardless of whether application introspection is
+  enabled (validation runs before the execution gate). Read-only,
+  single-request per axis, deterministic, strictly differential (a hint that
+  surfaces the *known* real identifier is the signal; generic suggestion text
+  unrelated to the probe shape never fires the finding).
+
+### 25. Schema suggestion-oracle leak (argument / type axes) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 32). New check `suggestion-leak`
+(`src/enshroud/checks/suggestion_leak.py`), category `suggestion_oracle_leak`
+(LOW), **included in `--checks all`**. Uses the existing
+`GraphQLClient.query` POST transport — no new client method. The mock server
+gains an `arg_type_suggestions_enabled` flag (defaults to
+`suggestions_enabled`, so existing fixtures behave identically) that, when
+set independently of `suggestions_enabled`, models the documented
+partial-hardening misconfiguration: a `formatError` regex stripping `Did you
+mean` from `Cannot query field` only.
+
+**Severity:** LOW — **Effort:** S — **Check name:** `suggestion-leak`
+
+**What it detects:**
+Two suggestion oracles `field-oracle` does not cover:
+
+- **Argument-name oracle (`KnownArgumentNamesRule`)** — probe
+  `{ __type(naem: "Query") { name } }` triggers `Unknown argument "naem" on
+  field "Query.__type". Did you mean "name"?`. Leaks **input argument
+  names** on real fields.
+- **Type-name oracle (`KnownTypeNamesRule`)** — probe
+  `{ ... on Queryy { __typename } }` triggers `Unknown type "Queryy". Did
+  you mean "Query"?`. Leaks **type names**.
+
+A finding fires only when the server's error message contains a `Did you
+mean` hint that surfaces the *known* real identifier we know corresponds to
+the deliberately-typo'd probe (`name` for argument-name, `Query` for
+type-name); generic suggestion text unrelated to the probe shape is captured
+in evidence but does not fire the finding. The check reports per-axis
+granularity in `leaked_axes` so a hardened-on-one-axis server still produces
+an actionable report.
+
+**Why it's genuinely new:**
+- `field-oracle` covers only the **selection-set field-name** axis — its sole
+  probe is `{ nonExistentFieldXyzzy }`, and its remediation regex on
+  `Cannot query field` errors does not reach `Unknown argument` or `Unknown
+  type` validation messages. The two new axes are the rules graphql-js
+  emits at *different* validation stages, against *different* schema metadata,
+  and are commonly left enabled when an operator believes the suggestion
+  oracle is closed.
+- `schema-fuzz` enumerates field names with a wordlist over the same
+  selection-set axis as `field-oracle` — it does not probe arguments or
+  type names.
+- `introspection-bypass` probes alternate *introspection* transports, not
+  the suggestion oracle at all.
+
+**Competitor gap:**
+graphql-cop / graphw00f / clairvoyance probe the suggestion oracle on the
+selection-set axis only (mirroring the `field-oracle` shape). None of them
+test argument-name or type-name suggestions, leaving the partial-hardening
+class invisible to existing tooling. enshroud now reports per-axis leak
+detection in the H1-markdown / JSON pipeline.
+
+**References:**
+- graphql-js `KnownArgumentNamesRule` and `KnownTypeNamesRule` (validation phase)
+- Apollo Server `formatError` documentation and the common "strip Did you mean" snippet
+- OWASP GraphQL Cheat Sheet: "Introspection" (suggestions are a side-channel)
+
+### Backlog after this rotation
+
+Directions 1–25 plus `verbose-errors`, `graphql-ide`, and `apq-collision`
+are all shipped. **schema-introspection-diff** is permanently rejected as
+architecturally incompatible (stateless scanner). Open ideas not yet
+implemented and worth considering next: GraphQL response-cache poisoning
+via alias/normalisation (multi-request, stateful) and per-event subscription
+re-authorization over WebSocket (timing-dependent, inside the opt-in
+`websocket` check). Note: subscription *flooding* / subscription-dos has
+been deterministically rejected **five** times (R18, R19, R22, R27, R32)
+as architecturally incompatible — do not re-suggest it without a genuinely
+new, deterministic, single-signal design. The bare
+**field-suggestion-leak** framing duplicates the v0.1 `field-oracle`
+check; only **distinct-axis** suggestion-oracle work is in scope, and the
+argument-name + type-name axes are now shipped here — future suggestion-
+oracle work needs a *new* axis (e.g. enum-value suggestions in input
+coercion errors, which require a known enum-typed argument and so are not
+universally probeable). **batch-query-depth** and **field-count-limit-
+probe** were rejected in R28, **query-complexity-score** in R29, **schema-
+introspection-diff** in R30, and **cost-limit-probe** in R31 as overlapping
+existing coverage or architecturally incompatible — do not re-suggest any
+of these without a genuinely new, deterministic, single-signal design.
+
+---
+
 ## Quick reference table
 
 | Rank | Check name | New flag | Severity | Effort | Default in `all`? |
@@ -1589,5 +1721,6 @@ without a genuinely new, deterministic, single-signal design.
 | 22 | `pq-enum` ✅ | `--checks pq-enum` | MEDIUM | S | Yes (shipped, R29) |
 | 23 | `mutation-allowlist-bypass` ✅ | `--checks mutation-allowlist-bypass` | HIGH | S | Yes (shipped, R30) |
 | 24 | `directive-enforcement` ✅ | `--checks directive-enforcement` | MEDIUM | S | Yes (shipped, R31) |
+| 25 | `suggestion-leak` ✅ | `--checks suggestion-leak` | LOW | S | Yes (shipped, R32) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
