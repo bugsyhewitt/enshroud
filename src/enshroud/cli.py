@@ -23,6 +23,7 @@ ALL_CHECKS = [
     "depth-dos",
     "depth-bypass",
     "alias-batch",
+    "alias-overloading",
     "batch-array",
     "field-dup",
     "fragment-cycle",
@@ -87,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated checks to run (default: all). "
             "Choices: introspection, introspection-bypass, depth-dos, "
-            "depth-bypass, alias-batch, batch-array, "
+            "depth-bypass, alias-batch, alias-overloading, batch-array, "
             "field-dup, fragment-cycle, directive-abuse, "
             "directive-enforcement, defer-abuse, "
             "field-oracle, suggestion-leak, auth-alias, verbose-errors, mutation-enum, "
@@ -178,6 +179,7 @@ async def run_checks(
     """Run selected checks and aggregate findings."""
     from enshroud.checks import (
         alias_batch,
+        alias_overloading,
         apq,
         apq_collision,
         apq_get,
@@ -221,6 +223,7 @@ async def run_checks(
         "depth-dos": depth_dos.check,
         "depth-bypass": depth_bypass.check,
         "alias-batch": alias_batch.check,
+        "alias-overloading": alias_overloading.check,
         "batch-array": batch_array.check,
         "field-dup": field_dup.check,
         "fragment-cycle": fragment_cycle.check,

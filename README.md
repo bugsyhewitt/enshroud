@@ -2,7 +2,7 @@
 
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
-enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, APQ cache poisoning via unverified query hashes, APQ execution over cacheable GET requests, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
+enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, real-field alias overloading (per-field rate-limit bypass), JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, APQ cache poisoning via unverified query hashes, APQ execution over cacheable GET requests, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
 
 ## Ethical Use
 
@@ -67,7 +67,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
 --checks CHECK          Comma-separated checks to run (default: all)
                         Choices: introspection, introspection-bypass,
                                  depth-dos, depth-bypass, alias-batch,
-                                 batch-array, field-dup, fragment-cycle,
+                                 alias-overloading, batch-array,
+                                 field-dup, fragment-cycle,
                                  directive-abuse, directive-enforcement,
                                  defer-abuse, field-oracle,
                                  suggestion-leak, auth-alias,
@@ -199,6 +200,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `depth-dos` | `depth_dos` | LOW | Missing query depth limit |
 | `depth-bypass` | `depth_limit_bypass` | MEDIUM | Query depth limit is enforced on flat queries but bypassed by hiding the deep nesting inside a named fragment — the limiter counts the operation body without expanding fragment spreads |
 | `alias-batch` | `alias_batching` | MEDIUM | Unbounded alias-based query batching |
+| `alias-overloading` | `alias_overloading` | MEDIUM | Many aliased copies of a real (non-meta) query field execute in one request — per-field rate-limit / cost-cap bypass distinct from `alias-batch`'s meta-field probe |
 | `batch-array` | `array_batching` | HIGH | JSON-array operation batching (rate-limit / brute-force bypass) |
 | `field-dup` | `field_duplication_dos` | MEDIUM | Repeated fields / fragment spreads not capped (repetition-axis DoS) |
 | `fragment-cycle` | `fragment_cycle_dos` | MEDIUM | Cyclic / self-referential fragment definitions not rejected by validation (spec §5.5.2.2 bypass; unbounded-expansion DoS) |
