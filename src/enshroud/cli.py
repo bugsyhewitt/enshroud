@@ -57,6 +57,7 @@ OPT_IN_CHECKS = [
     "schema-fuzz",
     "injection",
     "websocket",
+    "pq-brute",
 ]
 
 VALID_CHECKS = ALL_CHECKS + OPT_IN_CHECKS
@@ -94,7 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, pq-enum, operation-name-enum, "
             "trace-exposure, federation, all. "
-            "Opt-in (not in 'all'): schema-fuzz, injection, websocket."
+            "Opt-in (not in 'all'): schema-fuzz, injection, websocket, "
+            "pq-brute."
         ),
     )
     parser.add_argument(
@@ -122,8 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         metavar="RPS",
         help=(
-            "schema-fuzz probe rate in requests/second (default: 5). "
-            "Set <= 0 to disable throttling."
+            "schema-fuzz / pq-brute probe rate in requests/second "
+            "(default: 5). Set <= 0 to disable throttling."
         ),
     )
     parser.add_argument(
@@ -203,6 +205,7 @@ async def run_checks(
         mutation_allowlist_bypass,
         mutation_enum,
         operation_name_enum,
+        pq_brute,
         pq_enum,
         query_get,
         schema_fuzz,
@@ -252,6 +255,11 @@ async def run_checks(
         if check_name == "schema-fuzz":
             findings.extend(
                 await schema_fuzz.check(client, fuzz_rate=fuzz_rate)
+            )
+            continue
+        if check_name == "pq-brute":
+            findings.extend(
+                await pq_brute.check(client, fuzz_rate=fuzz_rate)
             )
             continue
         if check_name == "injection":

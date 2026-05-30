@@ -79,11 +79,12 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  apq-get, pq-enum, operation-name-enum,
                                  trace-exposure, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
-                                 websocket
+                                 websocket, pq-brute
 --format {json,h1md}    Output format (default: json)
 --auth-header HEADER    Auth header, e.g. "Authorization: Bearer TOKEN"
 --timeout SECONDS       Request timeout in seconds (default: 10)
---fuzz-rate RPS         schema-fuzz probe rate, req/s (default: 5; <=0 = no limit)
+--fuzz-rate RPS         schema-fuzz / pq-brute probe rate, req/s
+                        (default: 5; <=0 = no limit)
 --active                Enable active/blind probing for the injection check
                         (time-based SQLi). Off by default.
 --fail-on SEVERITY      Exit with code 3 if any finding is at or above this
@@ -227,6 +228,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
 | `websocket` _(opt-in)_ | `websocket_unauth_subscription`, `websocket_introspection`, `websocket_no_tls`, `websocket_cswsh` | HIGH | Tests the GraphQL-over-WebSocket subscription transport for unauthenticated handshakes, schema reachability, plaintext `ws://`, and Cross-Site WebSocket Hijacking |
+| `pq-brute` _(opt-in)_ | `persisted_query_id_brute_force` | HIGH | Range-walks a bounded integer document-ID space against an **ID-keyed** persisted-query store (`extensions.persistedQuery.id`, no `sha256Hash`) and surfaces the catalogue of operation IDs that execute. Active enumeration companion to the `pq-enum` signal check: where `pq-enum` reports *that* such a store exists (three probes, first-hit-and-stop), `pq-brute` enumerates *which* operation IDs are registered and replayable — paced by `--fuzz-rate`, capped at 500 probes per invocation. |
 
 ### JSON-array operation batching
 
@@ -956,6 +958,44 @@ differential against the APQ checks.
 enshroud --target https://api.example.com/graphql \
   --scope-file scope.txt \
   --checks pq-enum
+```
+
+### Persisted-query brute force over an ID-keyed store _(opt-in)_
+
+The `pq-brute` check is the active, range-walking companion to the
+`pq-enum` signal check. Where `pq-enum` probes three guessable IDs (`1`,
+`2`, `100`) across three transports and returns on the first hit — its job
+is to report *that* an ID-keyed persisted-query store exists, not *what* it
+contains — `pq-brute` turns that signal into an enumeration primitive: it
+walks a bounded integer-ID range (`1..200` by default, hard-capped at 500
+probes per invocation) and surfaces the actual catalogue of operation IDs
+that resolve to a real GraphQL `data` response.
+
+Probes use the `extensions.persistedQuery.id` transport with **no
+`sha256Hash`** so they cannot collide with a real APQ registration, and
+carry **no `query` body** so the server can only respond with data by
+executing an operation it has already registered under that identifier —
+the same read-only contract as `pq-enum`. Pacing is shared with
+`schema-fuzz` via `--fuzz-rate` (default 5 req/s; set `<= 0` to disable
+throttling).
+
+A **HIGH** `persisted_query_id_brute_force` finding fires when one or more
+IDs in the walked range return a `data` response, and lists every confirmed
+ID (capped at 100 in the finding payload to keep reports bounded). A
+pure-APQ server (hash-keyed, no ID lookup) returns `PersistedQueryNotFound`
+to every probe and produces no finding — keeping `pq-brute` strictly
+differential against the APQ checks and `pq-enum`.
+
+Because the walk sends up to `BRUTE_MAX_PROBES` requests in a single
+invocation — orders of magnitude more than any check in `--checks all` —
+`pq-brute` is **opt-in** and must be requested explicitly, the same way
+`schema-fuzz` and `injection` are.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks pq-brute \
+  --fuzz-rate 2
 ```
 
 ### Persisted-operation enumeration over a name-keyed registry
