@@ -74,6 +74,8 @@ def create_app(
     directive_enforcement_bypass: bool = False,
     arg_type_suggestions_enabled: bool | None = None,
     op_name_registry: list[str] | None = None,
+    alias_overload_fields: list[str] | None = None,
+    alias_overload_real_field_cap: int | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -303,6 +305,24 @@ def create_app(
         # and the name-only request falls through to the existing handlers,
         # yielding an error rather than `data`.
         "op_name_registry": list(op_name_registry) if op_name_registry else [],
+        # Real, argless top-level query fields advertised by introspection in
+        # addition to `__typename`, used by the `alias-overloading` check.
+        # The check picks the first non-meta, argless field from introspection
+        # as its probe target; when this list is None / empty the only
+        # query-type field is `__typename` (a meta-field the check ignores),
+        # so the check stays silent — the no-false-positive default.
+        "alias_overload_fields": list(alias_overload_fields) if alias_overload_fields else [],
+        # Per-real-field alias cap, used by the `alias-overloading` check.
+        # When set to N, the server rejects a single operation that contains
+        # more than N aliased copies of the same underlying *real* (non-meta)
+        # field with a complexity error — modelling an alias-aware cost-
+        # analysis pass that counts every aliased selection toward the per-
+        # field budget. When None (the misconfiguration the check detects)
+        # the server executes every aliased copy under its own response key,
+        # which is the per-field rate-limit bypass primitive. Independent of
+        # `batch_limit` (which counts *all* aliases regardless of target) so
+        # the two checks remain strictly differential.
+        "alias_overload_real_field_cap": alias_overload_real_field_cap,
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -462,6 +482,9 @@ def create_app(
                     ],
                 }
             )
+        # Real, argless top-level fields used by the alias-overloading check.
+        for name in cfg["alias_overload_fields"]:
+            fields.append({"name": name, "args": []})
         return fields
 
     def _build_arg_introspection(arg_spec: dict[str, Any]) -> dict[str, Any]:
@@ -1144,6 +1167,60 @@ def create_app(
                         ]
                     }
                 )
+                _add_cors(response)
+                return response
+
+        # ── Alias-overloading probe (alias-overloading check) ──────────────
+        # The check sends `{ enshroudOverloadAliasN: <real_field> { __typename
+        # } ... }`. When the query contains any aliased copy of a configured
+        # real (non-meta) field, this branch handles the request, returning a
+        # complexity error when `alias_overload_real_field_cap` is set and the
+        # per-field alias count exceeds it (modelling an alias-aware
+        # cost-analysis pass), or returning every aliased response key with a
+        # non-null payload otherwise (the bypass primitive the check fires
+        # on). Matched before the generic introspection / default-data
+        # branches so a probe whose aliased real field happens to be unknown
+        # to the rest of the mock does not fall through to a spurious 200.
+        if cfg["alias_overload_fields"]:
+            overload_alias_matches: dict[str, int] = {}
+            for real_field in cfg["alias_overload_fields"]:
+                pattern = (
+                    r"\b\w+\s*:\s*" + re.escape(real_field) + r"\b"
+                )
+                count = len(re.findall(pattern, query))
+                if count > 0:
+                    overload_alias_matches[real_field] = count
+            if overload_alias_matches:
+                cap = cfg["alias_overload_real_field_cap"]
+                max_per_field = max(overload_alias_matches.values())
+                if cap is not None and max_per_field > cap:
+                    response = JSONResponse(
+                        content={
+                            "errors": [
+                                {
+                                    "message": (
+                                        f"Query complexity exceeds limit: "
+                                        f"{max_per_field} aliased copies of a "
+                                        f"single field (cap: {cap})."
+                                    )
+                                }
+                            ]
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+                # No cap (or cap not exceeded): every aliased copy resolves
+                # independently with a non-null payload — the bypass signal.
+                data: dict[str, Any] = {}
+                for real_field, count in overload_alias_matches.items():
+                    # Re-extract the alias keys in document order so the
+                    # response mirrors the request's alias naming exactly.
+                    pattern = (
+                        r"\b(\w+)\s*:\s*" + re.escape(real_field) + r"\b"
+                    )
+                    for alias_key in re.findall(pattern, query):
+                        data[alias_key] = {"__typename": "Object"}
+                response = JSONResponse(content={"data": data})
                 _add_cors(response)
                 return response
 

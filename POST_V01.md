@@ -1723,6 +1723,7 @@ of these without a genuinely new, deterministic, single-signal design.
 | 24 | `directive-enforcement` ✅ | `--checks directive-enforcement` | MEDIUM | S | Yes (shipped, R31) |
 | 25 | `suggestion-leak` ✅ | `--checks suggestion-leak` | LOW | S | Yes (shipped, R32) |
 | 25 | `operation-name-enum` ✅ | `--checks operation-name-enum` | MEDIUM | S | Yes (shipped, R33) |
+| 27 | `alias-overloading` ✅ | `--checks alias-overloading` | MEDIUM | S | Yes (shipped, R35) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
 
@@ -1813,3 +1814,109 @@ walk vs. three-probe signal), and against `operation-name-enum` (no
 `operationName` on the wire).
 
 **Severity:** HIGH — **Effort:** S — **Check name:** `pq-brute` (opt-in)
+
+---
+
+## Phase 2 Rotation 35 — research lap + fresh gap analysis
+
+The two suggested directions for this rotation were `field-suggestion-leak`
+and `alias-overloading`, with explicit instructions to verify against the
+actual codebase before picking. Both were assessed:
+
+- **field-suggestion-leak** — **rejected, already shipped twice over.** The
+  literal "Did you mean X" field-name oracle is fully covered by the v0.1
+  `field-oracle` check (`field_suggestion_oracle`, LOW) and the R32
+  `suggestion-leak` check (`suggestion_oracle_leak`, LOW — argument-name and
+  type-name axes). Re-implementing either axis would duplicate an existing
+  check.
+
+- **alias-overloading** — **selected.** The existing v0.1 `alias-batch` check
+  (`alias_batching`, MEDIUM) probes alias breadth using the meta-field
+  `__typename`. `__typename` is never the target of a real-world per-field
+  rate-limit, brute-force protection, or resolver-cost weighting because it
+  does not resolve to a backend operation. As a result `alias-batch` answers
+  only "does this server enforce *any* alias / complexity cap?" and can
+  never demonstrate the canonical brute-force-via-aliases primitive: a
+  per-field rate-limit that *is* enforced on real fields but is bypassable
+  by aliasing those real fields. Read-only by construction (the discovered
+  field is filtered to argless, non-meta, and only `__typename` is selected
+  under each aliased copy), single-request, deterministic, and strictly
+  differential against `alias-batch` (the probe target is a non-meta query
+  field, never `__typename`).
+
+### 27. Real-field alias overloading (per-field rate-limit bypass) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 35). New check `alias-overloading`
+(`src/enshroud/checks/alias_overloading.py`), category `alias_overloading`
+(MEDIUM), **included in `--checks all`**. The mock server gains
+`alias_overload_fields: list[str]` (real argless query-type fields advertised
+by introspection in addition to `__typename`) and
+`alias_overload_real_field_cap: int | None` (per-real-field alias cap
+modelling an alias-aware cost-analysis pass). When the cap is set and a
+probe exceeds it the server returns a complexity error; when the cap is
+None every aliased copy of the real field resolves independently with a
+non-null payload — the bypass primitive the check fires on.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `alias-overloading`
+
+**What it detects:**
+A server that, in response to a single request containing `ALIAS_COUNT = 50`
+aliased copies of a *real, resolvable, argless* top-level query field
+discovered via introspection (`{ enshroudOverloadAlias1: <field>
+{ __typename } enshroudOverloadAlias2: <field> { __typename } ... }`),
+returns every aliased response key with a non-null payload. Proves that no
+per-field alias cap / cost-analysis pass is enforced for real fields — the
+exact configuration a brute-force attack against a `login` / OTP /
+coupon-redemption / password-reset resolver exploits by packing many
+independent attempts into one HTTP request under distinct alias keys.
+
+**Why it's genuinely new:**
+- `alias-batch` probes alias breadth using the introspection meta-field
+  `__typename`, which is never the target of per-field rate limits. It
+  answers "is *any* alias cap enforced?" and cannot demonstrate a real-field
+  cap bypass.
+- `alias-overloading` probes alias breadth using a **non-meta, resolvable
+  schema field** discovered via introspection (with `__typename` and all
+  argful fields explicitly excluded). It answers "is the per-real-field
+  alias cap enforceable at all?" — the actual brute-force surface.
+- Strictly differential: silent when no real argless query field is
+  introspectable (no false positives on schema-less / introspection-disabled
+  endpoints — that surface is owned by `introspection` /
+  `introspection-bypass` / `schema-fuzz`), silent when the server enforces a
+  per-real-field cap, and silent when partial / no aliased copies execute.
+
+**Competitor gap:**
+graphql-cop / graphw00f / Clairvoyance probe alias batching only against
+meta-fields and only as a generic DoS / complexity signal. None of them
+discover a real query field via introspection and probe alias overloading
+against it as a per-field rate-limit bypass primitive in the H1-markdown /
+JSON pipeline.
+
+**References:**
+- HackerOne / Wallarm GraphQL alias-batching brute-force writeups
+- OWASP GraphQL Cheat Sheet: "Batching Attacks" / "Query limiting (cost &
+  amount)" — count every selection (aliased or not) toward the per-field
+  budget, and enforce rate limits on the resolved invocation
+- Apollo Router `max_aliases` / `max_root_fields` documentation
+- graphql-cost-analysis / graphql-validation-complexity / Hot Chocolate cost
+  analysis (alias-aware complexity rules)
+
+### Backlog after this rotation
+
+Directions 1–27 plus `verbose-errors`, `graphql-ide`, and `apq-collision`
+are all shipped. **schema-introspection-diff** is permanently rejected as
+architecturally incompatible (stateless scanner). The bare
+**field-suggestion-leak** framing duplicates `field-oracle` and
+`suggestion-leak`; only new suggestion-oracle axes (e.g. enum-value
+suggestions in input coercion errors) are in scope. Open ideas not yet
+implemented and worth considering next: GraphQL response-cache poisoning
+via alias/normalisation (multi-request, stateful) and per-event subscription
+re-authorization over WebSocket (timing-dependent, inside the opt-in
+`websocket` check). Note: subscription *flooding* / subscription-dos has
+been deterministically rejected **five** times (R18, R19, R22, R27, R32) as
+architecturally incompatible; **batch-query-depth** and
+**field-count-limit-probe** were rejected in R28, **query-complexity-score**
+in R29, **schema-introspection-diff** in R30, and **cost-limit-probe** in
+R31 as overlapping existing coverage or architecturally incompatible — do
+not re-suggest any of these without a genuinely new, deterministic,
+single-signal design.
