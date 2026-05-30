@@ -1722,5 +1722,49 @@ of these without a genuinely new, deterministic, single-signal design.
 | 23 | `mutation-allowlist-bypass` ✅ | `--checks mutation-allowlist-bypass` | HIGH | S | Yes (shipped, R30) |
 | 24 | `directive-enforcement` ✅ | `--checks directive-enforcement` | MEDIUM | S | Yes (shipped, R31) |
 | 25 | `suggestion-leak` ✅ | `--checks suggestion-leak` | LOW | S | Yes (shipped, R32) |
+| 25 | `operation-name-enum` ✅ | `--checks operation-name-enum` | MEDIUM | S | Yes (shipped, R33) |
 
 Opt-in checks require explicit `--checks <name>` and are excluded from `--checks all` due to noise, speed, or active-probing concerns.
+
+---
+
+## Phase 2 Rotation 33 — pivot from suggested directions
+
+The two suggested directions for this rotation were `batch-request-dos` and
+`operation-name-enum`, with instructions to pick the genuine gap.
+
+- **batch-request-dos** — **rejected, already shipped.** The transport-level
+  JSON-array batching attack is fully covered by the `batch-array` check
+  (`src/enshroud/checks/batch_array.py`, category `array_batching`, HIGH,
+  shipped in R10). Re-implementing it would be a duplicate, not a new check.
+
+- **operation-name-enum** — **selected.** A persisted-operation registry keyed
+  on the human-meaningful operation name string is a distinct surface from
+  both the SHA-256-hashed APQ cache (`apq` / `apq-collision` / `apq-get`) and
+  the document-ID-keyed `pq-enum` store. Several persisted-document /
+  "trusted documents" implementations let a client replay a registered
+  operation by sending only `operationName` with no query body, no `id`, no
+  `documentId`, and no `extensions.persistedQuery`. When the registry holds
+  conventionally-named operations (`IntrospectionQuery`, `Login`, `Me`,
+  `HealthCheck`, `GetUser`) an unauthenticated client can enumerate the set
+  by guessing common names. Read-only by construction (the probe carries no
+  query body and no registration credential), strictly differential against
+  the APQ and `pq-enum` checks (no hash, no ID, no `extensions.persistedQuery`
+  on the wire), and a single-signal deterministic finding (`data` response on
+  a name-only request → finding).
+
+### 25. Persisted-operation enumeration over a name-keyed registry ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 33). New check `operation-name-enum`
+(`src/enshroud/checks/operation_name_enum.py`), category
+`persisted_operation_name_enumeration` (MEDIUM), **included in `--checks all`**.
+The mock server gains an `op_name_registry: list[str]` parameter (default
+empty = secure) modelling the name-keyed registry; when populated and a
+name-only request arrives whose `operationName` is in the list, the mock
+returns a `data` response. A new empty-body fall-through guard on the mock
+ensures requests with no resolvable operation (no query body, no APQ hash,
+no `pq-enum` ID, no name registry hit) return an error rather than a spurious
+`data` — preserving strict differentiation between this check and the existing
+persisted-operation checks.
+
+**Severity:** MEDIUM — **Effort:** S — **Check name:** `operation-name-enum`
