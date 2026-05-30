@@ -73,6 +73,7 @@ def create_app(
     op_type_confusion: bool = False,
     directive_enforcement_bypass: bool = False,
     arg_type_suggestions_enabled: bool | None = None,
+    op_name_registry: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -290,6 +291,18 @@ def create_app(
             if arg_type_suggestions_enabled is not None
             else suggestions_enabled
         ),
+        # Name-keyed persisted-operation registry, used by the
+        # `operation-name-enum` check. Distinct from the hash-keyed APQ store
+        # and the ID-keyed `pq_id_store` (above): keys the cache on the human-
+        # meaningful operation *name* string. When provided, an incoming
+        # request that carries *only* `operationName` (no `query` body, no
+        # `id` / `documentId`, no `extensions.persistedQuery`) and whose
+        # `operationName` value is in this list is treated as a hit and
+        # returned a `data` response — the enumerable surface the check
+        # reports. When None / empty (default, safe) the registry is absent
+        # and the name-only request falls through to the existing handlers,
+        # yielding an error rather than `data`.
+        "op_name_registry": list(op_name_registry) if op_name_registry else [],
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -794,6 +807,40 @@ def create_app(
                     return response
                 # Non-validating executor: accept and "execute" the cyclic doc.
                 response = JSONResponse(content={"data": {"__typename": "Query"}})
+                _add_cors(response)
+                return response
+
+        # ── Name-keyed persisted-operation registry (operation-name-enum) ──
+        # An operation referenced purely by its human-meaningful name with NO
+        # query body, NO id / documentId, and NO extensions.persistedQuery.
+        # Distinct from the hash-keyed APQ cache and the ID-keyed
+        # `pq_id_store` (below). When `op_name_registry` is non-empty and the
+        # incoming request carries only `operationName` whose value is in the
+        # configured registry, treat it as a hit — the enumerable surface the
+        # check reports. When the registry is empty or the name is unknown,
+        # fall through to the existing handlers (which return an error rather
+        # than `data`).
+        if (
+            body.get("query") is None
+            and body.get("id") is None
+            and body.get("documentId") is None
+        ):
+            _ext_check = body.get("extensions") or {}
+            _pq_check = (
+                _ext_check.get("persistedQuery")
+                if isinstance(_ext_check, dict)
+                else None
+            )
+            _op_name = body.get("operationName")
+            if (
+                _pq_check is None
+                and isinstance(_op_name, str)
+                and _op_name
+                and _op_name in cfg["op_name_registry"]
+            ):
+                response = JSONResponse(
+                    content={"data": {"__typename": "Query"}}
+                )
                 _add_cors(response)
                 return response
 
@@ -1518,6 +1565,29 @@ def create_app(
             response = JSONResponse(status_code=200, content={"errors": [err]})
             _add_cors(response)
             _engine_headers(response)
+            return response
+
+        # Empty-body fall-through guard: a request that carries no `query`
+        # body (and was not resolved by any of the persisted-operation
+        # handlers above — APQ hash, `pq_id_store` ID, or
+        # `op_name_registry` name) is not a runnable operation. A real
+        # GraphQL executor must reject it with an error rather than emit a
+        # spurious `data` response, so the operation-name-enum / pq-enum
+        # checks read this as the secure posture and stay silent.
+        if not query:
+            response = JSONResponse(
+                status_code=400,
+                content={
+                    "errors": [
+                        {
+                            "message": (
+                                "Must provide a query string."
+                            )
+                        }
+                    ]
+                },
+            )
+            _add_cors(response)
             return response
 
         # Default response. Uses _success so that, when tracing is configured,

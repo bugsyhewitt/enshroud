@@ -76,8 +76,8 @@ enshroud --target https://api.example.com/graphql --scope-file scope.txt
                                  csrf-multipart, query-get, cookie-posture,
                                  graphql-ide,
                                  fingerprint, apq, apq-collision,
-                                 apq-get, pq-enum, trace-exposure,
-                                 federation, all
+                                 apq-get, pq-enum, operation-name-enum,
+                                 trace-exposure, federation, all
                         Opt-in (not in 'all'): schema-fuzz, injection,
                                  websocket
 --format {json,h1md}    Output format (default: json)
@@ -221,6 +221,7 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `apq-collision` | `apq_hash_mismatch` | MEDIUM–HIGH | APQ cache poisoning: server stores a registration whose `query` does not hash to the supplied `sha256Hash` (missing `PersistedQueryHashMismatch` integrity check) |
 | `apq-get` | `apq_execution_over_get` | MEDIUM | APQ persisted query executes over a cacheable `GET` (`?extensions={persistedQuery:…}`) — a cross-site / cache-flooding transport the POST-only CSRF guard never covers |
 | `pq-enum` | `persisted_query_id_enumeration` | MEDIUM | A registered operation executes from a short, guessable document **ID** sent with no query body (Relay `id` / trusted-documents `documentId` / `extensions.persistedQuery.id`) — an enumerable, **ID-keyed** persisted-query store distinct from APQ's unguessable SHA-256 hash cache |
+| `operation-name-enum` | `persisted_operation_name_enumeration` | MEDIUM | A registered operation executes from a guessable **operation name** sent with no query body, no document ID, and no APQ hash (`{"operationName": "Login"}`) — an enumerable, **name-keyed** persisted-operation registry distinct from both APQ's hash cache and `pq-enum`'s ID store |
 | `trace-exposure` | `trace_exposure` | LOW | Apollo Tracing (`extensions.tracing`) or Federation FTV1 (`extensions.ftv1`) performance metadata exposed on the success path — leaks per-resolver timings and schema type/field names to arbitrary clients |
 | `federation` | `federation_sdl_exposed`, `federation_entities_exposed` | HIGH / MEDIUM | Apollo Federation `_service { sdl }` schema dump (introspection bypass) and a directly reachable `_entities` resolver |
 | `schema-fuzz` _(opt-in)_ | `schema_reconstructed` | LOW–MEDIUM | Reconstructs schema field names via the suggestion oracle when introspection is disabled |
@@ -955,6 +956,43 @@ differential against the APQ checks.
 enshroud --target https://api.example.com/graphql \
   --scope-file scope.txt \
   --checks pq-enum
+```
+
+### Persisted-operation enumeration over a name-keyed registry
+
+The `operation-name-enum` check targets a persisted-operation surface that
+neither the APQ family (`apq`, `apq-collision`, `apq-get`) nor `pq-enum` covers.
+APQ keys on the unguessable **SHA-256 hash** of the query text; `pq-enum` keys
+on a short **document identifier** (`id` / `documentId` /
+`extensions.persistedQuery.id`). Some persisted-document / "trusted documents"
+implementations instead key their registry on the human-meaningful
+**operation name** string: a client can replay a registered operation by
+sending only an `operationName` (no `query` body, no `id`, no
+`extensions.persistedQuery`) and the server looks the name up in the registry
+and executes the registered operation.
+
+When that registry is populated with conventional, semantically-named
+operations (`IntrospectionQuery`, `Login`, `Me`, `HealthCheck`, `GetUser`) an
+unauthenticated client can enumerate the registered set purely by guessing
+common names, replaying admin or internal operations whose source they never
+had.
+
+enshroud probes the name-keyed registry with a short list of conventional
+operation names. Each probe carries **only** `operationName` — no `query` body,
+no `id`, no `documentId`, no `extensions.persistedQuery` — so the check only
+ever asks the server to run an *already-registered* operation by name, never
+one of its own. It fires a **MEDIUM**
+`persisted_operation_name_enumeration` finding **only** when one of those
+name-only requests returns a top-level `data` response, and stops at the first
+confirmed signal. A pure-APQ (hash-keyed) server or a pure-ID-keyed
+(`pq-enum`-style) store rejects every name-only probe and produces no finding —
+keeping `operation-name-enum` strictly differential against the other
+persisted-operation checks.
+
+```bash
+enshroud --target https://api.example.com/graphql \
+  --scope-file scope.txt \
+  --checks operation-name-enum
 ```
 
 ### Performance-tracing exposure (Apollo Tracing / FTV1)
