@@ -76,6 +76,11 @@ def create_app(
     op_name_registry: list[str] | None = None,
     alias_overload_fields: list[str] | None = None,
     alias_overload_real_field_cap: int | None = None,
+    enum_value_suggestions_enabled: bool | None = None,
+    enum_field: str | None = None,
+    enum_arg: str | None = None,
+    enum_type_name: str | None = None,
+    enum_values: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -323,6 +328,22 @@ def create_app(
         # `batch_limit` (which counts *all* aliases regardless of target) so
         # the two checks remain strictly differential.
         "alias_overload_real_field_cap": alias_overload_real_field_cap,
+        # Enum-value suggestion-oracle configuration (enum-value-leak check).
+        # When enum_field / enum_arg / enum_type_name / enum_values are
+        # provided, the introspection response exposes an enum-typed argument
+        # on a query field and the __type query returns its declared values.
+        # ``enum_value_suggestions_enabled`` controls whether a wrong-literal
+        # probe gets a ``Did you mean`` hint. Defaults to global
+        # ``suggestions_enabled`` when None.
+        "enum_value_suggestions_enabled": (
+            enum_value_suggestions_enabled
+            if enum_value_suggestions_enabled is not None
+            else suggestions_enabled
+        ),
+        "enum_field": enum_field,
+        "enum_arg": enum_arg,
+        "enum_type_name": enum_type_name,
+        "enum_values": list(enum_values) if enum_values else [],
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -485,6 +506,23 @@ def create_app(
         # Real, argless top-level fields used by the alias-overloading check.
         for name in cfg["alias_overload_fields"]:
             fields.append({"name": name, "args": []})
+        # Enum-typed argument field, used by the enum-value-leak check.
+        if cfg["enum_field"] and cfg["enum_arg"] and cfg["enum_type_name"]:
+            fields.append(
+                {
+                    "name": cfg["enum_field"],
+                    "args": [
+                        {
+                            "name": cfg["enum_arg"],
+                            "type": {
+                                "kind": "ENUM",
+                                "name": cfg["enum_type_name"],
+                                "ofType": None,
+                            },
+                        }
+                    ],
+                }
+            )
         return fields
 
     def _build_arg_introspection(arg_spec: dict[str, Any]) -> dict[str, Any]:
@@ -1338,6 +1376,36 @@ def create_app(
         )
 
         if is_introspection:
+            # ── Enum-values __type introspection (enum-value-leak check) ────
+            # Placed first inside the introspection block so the specific
+            # `{ __type(name: "X") { enumValues { name } } }` shape is
+            # intercepted before the generic __schema / __type dispatch below.
+            if (
+                cfg["enum_type_name"]
+                and cfg["enum_values"]
+                and "enumValues" in query
+            ):
+                type_name_match = re.search(
+                    r'__type\s*\(\s*name\s*:\s*["\']([^"\']+)["\']', query
+                )
+                if (
+                    type_name_match
+                    and type_name_match.group(1) == cfg["enum_type_name"]
+                ):
+                    response = JSONResponse(
+                        content={
+                            "data": {
+                                "__type": {
+                                    "enumValues": [
+                                        {"name": v} for v in cfg["enum_values"]
+                                    ]
+                                }
+                            }
+                        }
+                    )
+                    _add_cors(response)
+                    return response
+
             # ── Naive-filter modelling (introspection-bypass) ───────────────
             # A broken introspection block that leaks via an alternate probe.
             filt = cfg["introspection_filter"]
@@ -1486,6 +1554,53 @@ def create_app(
                     f'Cannot query field "{probed_name}" on type "Query".'
                 )
                 response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
+
+        # ── Enum-value suggestion-oracle probe (enum-value-leak check) ────
+        # Wrong-enum-literal probe:
+        # `{ <enum_field>(<enum_arg>: <truncated_value>) { __typename } }`
+        # Matched when the query contains the probe field name / arg name and
+        # a literal that is *not* a valid enum value.
+        if (
+            cfg["enum_field"]
+            and cfg["enum_arg"]
+            and cfg["enum_type_name"]
+            and cfg["enum_values"]
+        ):
+            enum_field_name: str = cfg["enum_field"]
+            enum_arg_name: str = cfg["enum_arg"]
+            enum_type: str = cfg["enum_type_name"]
+            valid_values: list[str] = cfg["enum_values"]
+            # Match a probe of the form `{ <field>(<arg>: <LITERAL>) { __typename } }`
+            # where LITERAL is an unquoted identifier (enum literal, not a string).
+            probe_re = re.compile(
+                rf"\{{\s*{re.escape(enum_field_name)}\s*\(\s*{re.escape(enum_arg_name)}\s*:\s*([A-Z_][A-Z0-9_]*)\s*\)\s*\{{\s*__typename\s*\}}\s*\}}"
+            )
+            pm = probe_re.search(query)
+            if pm:
+                literal = pm.group(1)
+                if literal not in valid_values:
+                    # Invalid enum literal: emit a ValuesOfCorrectTypeRule error.
+                    msg = (
+                        f'Expected type "{enum_type}", found {literal}.'
+                    )
+                    if cfg["enum_value_suggestions_enabled"]:
+                        # Build a "Did you mean" hint from close-enough values.
+                        # Simple heuristic: include values that share the probe
+                        # prefix (the truncated form is a prefix of the real value).
+                        hints = [v for v in valid_values if v.startswith(literal)]
+                        if not hints:
+                            hints = valid_values[:2]  # fallback: first two values
+                        quoted = " or ".join(f'"{v}"' for v in hints[:2])
+                        msg += f" Did you mean the enum value {quoted}?"
+                    response = JSONResponse(content={"errors": [{"message": msg}]})
+                    _add_cors(response)
+                    return response
+                # Valid literal: return a stub data response.
+                response = JSONResponse(
+                    content={"data": {enum_field_name: {"__typename": "Object"}}}
+                )
                 _add_cors(response)
                 return response
 
