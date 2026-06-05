@@ -51,6 +51,7 @@ ALL_CHECKS = [
     "operation-name-enum",
     "trace-exposure",
     "federation",
+    "response-cache-poison",
 ]
 
 # Opt-in checks: valid to request explicitly, but excluded from "all" because
@@ -96,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
             "mutation-allowlist-bypass, cors, csrf, "
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, pq-enum, operation-name-enum, "
-            "trace-exposure, federation, all. "
+            "trace-exposure, federation, response-cache-poison, all. "
             "Opt-in (not in 'all'): schema-fuzz, injection, websocket, "
             "pq-brute."
         ),
@@ -211,6 +212,7 @@ async def run_checks(
         pq_brute,
         pq_enum,
         query_get,
+        response_cache_poison,
         schema_fuzz,
         enum_value_leak,
         suggestion_leak,
@@ -251,6 +253,7 @@ async def run_checks(
         "apq-get": apq_get.check,
         "pq-enum": pq_enum.check,
         "operation-name-enum": operation_name_enum.check,
+        "response-cache-poison": response_cache_poison.check,
         "trace-exposure": trace_exposure.check,
         "federation": federation.check,
         "websocket": websocket.check,
