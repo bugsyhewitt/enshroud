@@ -1920,3 +1920,81 @@ in R29, **schema-introspection-diff** in R30, and **cost-limit-probe** in
 R31 as overlapping existing coverage or architecturally incompatible — do
 not re-suggest any of these without a genuinely new, deterministic,
 single-signal design.
+
+---
+
+## Phase 2 Rotation 36 — research lap + fresh gap analysis
+
+The R35 backlog noted that "only new suggestion-oracle axes (e.g. enum-value
+suggestions in input coercion errors) are in scope." The R36 dispatch confirmed
+this direction. After a full codebase read the four graphql-js `didYouMean` axes
+were audited:
+
+1. **Field-name** (`FieldsOnCorrectTypeRule`) — shipped as `field-oracle`
+   (v0.1) and `schema-fuzz` (opt-in, R5).
+2. **Argument-name** (`KnownArgumentNamesRule`) and **type-name**
+   (`KnownTypeNamesRule`) — both shipped as `suggestion-leak` (R32).
+3. **Enum value** (`ValuesOfCorrectTypeRule`) — **zero prior coverage.
+   Selected.**
+
+### 28. Enum-value suggestion-oracle leak (ValuesOfCorrectTypeRule) ✅ IMPLEMENTED
+
+**Status:** Shipped (Phase 2 Rotation 36). New check `enum-value-leak`
+(`src/enshroud/checks/enum_value_leak.py`), category
+`enum_value_oracle_leak` (LOW), **included in `--checks all`**. The mock
+server gains five new parameters (`enum_field`, `enum_arg`,
+`enum_type_name`, `enum_values`, `enum_value_suggestions_enabled`) to model
+an endpoint with an enum-typed argument and configurable suggestion
+suppression. 17 new tests in `tests/test_enum_value_leak.py`.
+
+**Severity:** LOW — **Effort:** S — **Check name:** `enum-value-leak`
+
+**What it detects:**
+The `ValuesOfCorrectTypeRule` validator in graphql-js fires when a literal
+value is supplied to an enum-typed argument but the literal is not a valid
+enum member. When suggestions are enabled (the default) the error carries a
+`getSuggestionsForEnumValues` hint:
+
+```
+Expected type "StatusEnum", found ACTIV. Did you mean the enum value
+"ACTIVE" or "INACTIVE"?
+```
+
+The check:
+1. Introspects `queryType.fields[*].args[*].type` to find the first
+   enum-typed argument (unwrapping `NON_NULL`/`LIST` wrappers).
+2. Fetches the enum's declared values via
+   `{ __type(name: "<EnumType>") { enumValues { name } } }`.
+3. Probes with a one-deletion truncation of the first value
+   (`"ACTIVE"` → `"ACTIV"`).
+4. Fires when the response carries a `Did you mean` hint naming the real
+   value.
+
+**Why it's genuinely new:**
+`suggestion-leak` (R32) covers the argument-name (`KnownArgumentNamesRule`)
+and type-name (`KnownTypeNamesRule`) axes. The enum-value axis is a
+**third, independent oracle**: an operator who has suppressed the
+`Cannot query field` suggestions and the `Unknown argument` suggestions
+(for example, by patching `formatError` to strip only those patterns) may
+still leave the `ValuesOfCorrectTypeRule` enum suggestions untouched. The
+check is strictly read-only and requires only introspection (which is itself
+already reportable when enabled). It emits at most one finding per run.
+
+**Competitor gap:**
+graphql-cop, InQL, graphw00f, and Clairvoyance do not probe the
+`ValuesOfCorrectTypeRule` enum-suggestion axis. enshroud now ships automated
+detection of all four graphql-js `didYouMean` oracle axes.
+
+**References:**
+- graphql-js `src/validation/rules/ValuesOfCorrectTypeRule.ts`
+- OWASP GraphQL Cheat Sheet: "Information Exposure Through Suggestions"
+- HackerOne report corpus: suggestion oracles as recon primitives
+
+### Backlog after this rotation
+
+Directions 1–28 plus `verbose-errors`, `graphql-ide`, and `apq-collision`
+are all shipped. All four graphql-js `didYouMean` suggestion-oracle axes are
+now covered. Open ideas not yet implemented and worth considering next:
+GraphQL response-cache poisoning via alias/normalisation (multi-request,
+stateful) and per-event subscription re-authorization over WebSocket
+(timing-dependent, inside the opt-in `websocket` check).
