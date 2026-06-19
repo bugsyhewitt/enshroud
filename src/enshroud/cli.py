@@ -58,9 +58,12 @@ ALL_CHECKS = [
 # they are slow, noisy, or actively probe the target.
 OPT_IN_CHECKS = [
     "schema-fuzz",
+    "schema-export",
     "injection",
     "websocket",
     "pq-brute",
+    "bola",
+    "field-authz",
 ]
 
 VALID_CHECKS = ALL_CHECKS + OPT_IN_CHECKS
@@ -98,8 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
             "csrf-multipart, query-get, cookie-posture, graphql-ide, fingerprint, apq, "
             "apq-collision, apq-get, pq-enum, operation-name-enum, "
             "trace-exposure, federation, response-cache-poison, all. "
-            "Opt-in (not in 'all'): schema-fuzz, injection, websocket, "
-            "pq-brute."
+            "Opt-in (not in 'all'): schema-fuzz, schema-export, injection, "
+            "websocket, pq-brute, bola, field-authz."
         ),
     )
     parser.add_argument(
@@ -135,8 +138,82 @@ def build_parser() -> argparse.ArgumentParser:
         "--active",
         action="store_true",
         help=(
-            "Enable active/blind probing for the injection check (time-based "
-            "SQLi). Off by default; only affects --checks injection."
+            "Enable active probing for checks that touch another principal's "
+            "data or make the backend sleep: injection (time-based SQLi), "
+            "bola (object-level ID-swap), and field-authz (sensitive-field "
+            "over-fetch). Off by default. The bola/field-authz hard caps still "
+            "apply — one benign request each, no enumeration."
+        ),
+    )
+    # ── schema-export options (read-only schema reconstruction artifact) ───
+    parser.add_argument(
+        "--schema-out",
+        metavar="FILE",
+        default=None,
+        help=(
+            "For --checks schema-export: also write the reconstructed "
+            "InQL/Voyager-compatible introspection JSON to this path."
+        ),
+    )
+    # ── bola options (object-level authorization confirmation) ──────────────
+    # The bola check reads ONE object the operator names here — ideally two test
+    # accounts the operator controls. No enumeration; hard-capped at one request.
+    parser.add_argument(
+        "--bola-field",
+        metavar="FIELD",
+        default=None,
+        help="For --checks bola: the query field that fetches an object by ID.",
+    )
+    parser.add_argument(
+        "--bola-id-arg",
+        metavar="ARG",
+        default="id",
+        help="For --checks bola: the ID argument name (default: id).",
+    )
+    parser.add_argument(
+        "--bola-my-id",
+        metavar="ID",
+        default=None,
+        help=(
+            "For --checks bola: an object ID the caller's session owns "
+            "(optional; used to assert the swap reads a DIFFERENT object)."
+        ),
+    )
+    parser.add_argument(
+        "--bola-other-id",
+        metavar="ID",
+        default=None,
+        help=(
+            "For --checks bola: another principal's object ID to attempt to "
+            "read (required to run the check)."
+        ),
+    )
+    parser.add_argument(
+        "--bola-fields",
+        metavar="F1,F2",
+        default=None,
+        help=(
+            "For --checks bola: optional extra fields to select on the object "
+            "(comma-separated). The confirmation rests on the returned id."
+        ),
+    )
+    # ── field-authz options (field-level authorization confirmation) ────────
+    parser.add_argument(
+        "--authz-field",
+        metavar="FIELD",
+        default=None,
+        help=(
+            "For --checks field-authz: the query field exposing sensitive "
+            "sub-fields (required to run the check)."
+        ),
+    )
+    parser.add_argument(
+        "--authz-sensitive",
+        metavar="F1,F2",
+        default=None,
+        help=(
+            "For --checks field-authz: comma-separated sensitive sub-fields to "
+            "request (e.g. ssn,creditCard,passwordHash). Required to run."
         ),
     )
     parser.add_argument(
@@ -172,13 +249,28 @@ def parse_checks(checks_str: str) -> list[str]:
     return result
 
 
+def _split_csv(value: str | None) -> list[str] | None:
+    """Split a comma-separated CLI value into a clean list (None passes through)."""
+    if value is None:
+        return None
+    items = [v.strip() for v in value.split(",")]
+    return [v for v in items if v]
+
+
 async def run_checks(
     checks: list[str],
     client: GraphQLClient,
     fuzz_rate: float = 5.0,
     active: bool = False,
+    options: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run selected checks and aggregate findings."""
+    """Run selected checks and aggregate findings.
+
+    ``options`` carries the per-check configuration the targeted confirmers
+    need (bola object IDs, field-authz sensitive fields, schema-export output
+    path). It is ignored by checks that don't read it.
+    """
+    opts = options or {}
     from enshroud.checks import (
         alias_batch,
         alias_overloading,
@@ -187,6 +279,7 @@ async def run_checks(
         apq_get,
         auth_alias,
         batch_array,
+        bola,
         cookie_posture,
         cors,
         csrf,
@@ -198,6 +291,7 @@ async def run_checks(
         directive_abuse,
         directive_enforcement,
         federation,
+        field_authz,
         field_dup,
         field_oracle,
         fingerprint,
@@ -213,6 +307,7 @@ async def run_checks(
         pq_enum,
         query_get,
         response_cache_poison,
+        schema_export,
         schema_fuzz,
         enum_value_leak,
         suggestion_leak,
@@ -266,6 +361,15 @@ async def run_checks(
                 await schema_fuzz.check(client, fuzz_rate=fuzz_rate)
             )
             continue
+        if check_name == "schema-export":
+            findings.extend(
+                await schema_export.check(
+                    client,
+                    fuzz_rate=fuzz_rate,
+                    schema_out=opts.get("schema_out"),
+                )
+            )
+            continue
         if check_name == "pq-brute":
             findings.extend(
                 await pq_brute.check(client, fuzz_rate=fuzz_rate)
@@ -274,6 +378,29 @@ async def run_checks(
         if check_name == "injection":
             findings.extend(
                 await injection.check(client, active=active)
+            )
+            continue
+        if check_name == "bola":
+            findings.extend(
+                await bola.check(
+                    client,
+                    active=active,
+                    query_field=opts.get("bola_field"),
+                    id_arg=opts.get("bola_id_arg", "id"),
+                    my_id=opts.get("bola_my_id"),
+                    other_id=opts.get("bola_other_id"),
+                    extra_fields=opts.get("bola_fields"),
+                )
+            )
+            continue
+        if check_name == "field-authz":
+            findings.extend(
+                await field_authz.check(
+                    client,
+                    active=active,
+                    query_field=opts.get("authz_field"),
+                    sensitive_fields=opts.get("authz_sensitive"),
+                )
             )
             continue
         fn = check_map.get(check_name)
@@ -326,8 +453,26 @@ def main() -> None:
         timeout=args.timeout,
     )
 
+    # Per-check configuration for the targeted confirmers / artifact export.
+    options = {
+        "schema_out": args.schema_out,
+        "bola_field": args.bola_field,
+        "bola_id_arg": args.bola_id_arg,
+        "bola_my_id": args.bola_my_id,
+        "bola_other_id": args.bola_other_id,
+        "bola_fields": _split_csv(args.bola_fields),
+        "authz_field": args.authz_field,
+        "authz_sensitive": _split_csv(args.authz_sensitive),
+    }
+
     findings = asyncio.run(
-        run_checks(checks, client, fuzz_rate=args.fuzz_rate, active=args.active)
+        run_checks(
+            checks,
+            client,
+            fuzz_rate=args.fuzz_rate,
+            active=args.active,
+            options=options,
+        )
     )
 
     if args.format == "h1md":

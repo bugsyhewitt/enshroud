@@ -231,6 +231,9 @@ Disable introspection in production. Most GraphQL servers support this via a con
 | `injection` _(opt-in)_ | `sql_injection_signal`, `nosql_injection_signal` | CRITICAL | Probes scalar arguments for SQL/NoSQL injection via error-based (and, with `--active`, time-based) fuzzing |
 | `websocket` _(opt-in)_ | `websocket_unauth_subscription`, `websocket_introspection`, `websocket_no_tls`, `websocket_cswsh` | HIGH | Tests the GraphQL-over-WebSocket subscription transport for unauthenticated handshakes, schema reachability, plaintext `ws://`, and Cross-Site WebSocket Hijacking |
 | `pq-brute` _(opt-in)_ | `persisted_query_id_brute_force` | HIGH | Range-walks a bounded integer document-ID space against an **ID-keyed** persisted-query store (`extensions.persistedQuery.id`, no `sha256Hash`) and surfaces the catalogue of operation IDs that execute. Active enumeration companion to the `pq-enum` signal check: where `pq-enum` reports *that* such a store exists (three probes, first-hit-and-stop), `pq-brute` enumerates *which* operation IDs are registered and replayable — paced by `--fuzz-rate`, capped at 500 probes per invocation. |
+| `schema-export` _(opt-in)_ | `schema_artifact_reconstructed` | MEDIUM | Reconstructs the schema via the field-suggestion oracle **and** recovers argument names via the argument-suggestion oracle (`Unknown argument … Did you mean …`), then emits a standard GraphQL introspection-result JSON document — the shape InQL, GraphQL Voyager, and graphql-path-enum consume (`--schema-out FILE`). Read-only. Where `schema-fuzz` reports a flat list of recovered field names, `schema-export` produces a reusable, structured schema artifact (fields + their argument names) that maps the surface a disabled-introspection control was meant to hide and drives `bola`. (OWASP API3:2023, CWE-200.) |
+| `bola` _(opt-in, `--active`)_ | `bola_object_authz_missing` | HIGH | Confirms **object-level authorization is missing (BOLA / IDOR)** with one bounded, benign request: it swaps the ID argument of an operator-named object-fetch field for *another principal's* object ID using the caller's own (low-privilege) session, and fires only when *that other object's* data is returned. Returning the caller's own object is **not** BOLA. No ID-space enumeration — one request, hard-capped; sensitive values redacted in the evidence. (OWASP API1:2023, CWE-639.) |
+| `field-authz` _(opt-in, `--active`)_ | `field_level_authz_missing` | MEDIUM / HIGH | Confirms **field-level authorization is missing (excessive data exposure)** with one benign request: it selects operator-named sensitive sub-fields (e.g. `ssn`, `creditCard`, `passwordHash`) on a single object and fires only when they return **non-null**. A server that nulls/gates them yields no finding; sensitive values are redacted in the evidence. (OWASP API3:2023, CWE-200 / CWE-639.) |
 
 ### JSON-array operation batching
 
@@ -1168,6 +1171,104 @@ unauthenticated `connection_init` to test the handshake gate; if the server
 requires auth to ack — the secure behaviour — the check produces no findings.
 When the optional `websockets` dependency is not installed, the check reports no
 findings rather than failing.
+
+### Schema export — InQL/Voyager artifact + argument inference (`schema-export`)
+
+`schema-fuzz` proves the field-suggestion oracle leaks enough signal to recover
+schema field names without introspection, and reports those names as a flat
+list. `schema-export` turns that same introspection-disabled reconstruction into
+a **reusable, structured artifact** and goes one step further by recovering
+**argument names** too:
+
+- It reconstructs query field names by BFS over the field-suggestion oracle
+  (same primitive as `schema-fuzz`), then for each discovered field sends a
+  bounded set of near-miss **argument** probes
+  (`{ user(idd: "x") { __typename } }`) and harvests the real names graphql-js
+  leaks back (`Unknown argument "idd" on field "Query.user". Did you mean
+  "id"?`). Argument names are what make a reconstructed schema *actionable* —
+  they reveal the ID-shaped arguments the `bola` check manipulates.
+- It assembles the confirmed field and argument names into a standard GraphQL
+  introspection-result JSON document (`{"data": {"__schema": {...}}}`) — the
+  exact shape [Clairvoyance](https://github.com/nikitastupin/clairvoyance)
+  emits and InQL, GraphQL Voyager, and graphql-path-enum consume. With
+  `--schema-out FILE` the artifact is written to disk; it always travels inside
+  the finding too.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks schema-export --schema-out recovered-schema.json
+```
+
+The whole pass is **read-only and safe** — it sends invalid field/argument names
+and reads validation errors; no resolver runs and no state changes — so it is
+throttled by `--fuzz-rate` like `schema-fuzz` but needs no `--active`. Field
+return types and argument types in the artifact are placeholders (the oracle
+confirms *names*, not concrete types); it is a faithful partial schema, exactly
+what an introspection-disabled reconstruction can know. When the oracle is silent
+(suggestions disabled, or a non-leaking engine), the check degrades to no
+finding rather than reporting a hardened endpoint as having no schema.
+
+### Object-level authorization — BOLA / IDOR (`bola`)
+
+GraphQL has no built-in authorization: every resolver must check that the caller
+may see the object it returns. A resolver that fetches an object by an ID
+argument and skips that check lets any authenticated (even low-privilege) caller
+read another user's object by changing the ID — Broken Object Level
+Authorization (OWASP **API1:2023**, CWE-639), the highest-frequency GraphQL
+authorization bug.
+
+`bola` **confirms** the missing control with a **bounded, benign** proof — the
+line between a confirmation tool and an attack:
+
+- It sends **one** request that fetches the operator-named *other* object by ID,
+  using the caller's own session, and fires **only when that other object's
+  data is returned**. Merely observing that `user(id: …)` exists and takes an ID
+  is detection, not confirmation; returning the caller's *own* object is **not**
+  BOLA.
+- It reads **one** object the operator names — it never enumerates an ID range
+  or sweeps a user base (that is the attack the finding's `blast_radius`
+  *describes*, not what enshroud runs). Sensitive field *values* are redacted in
+  the stored evidence; the proof is the returned object's *identifier*.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks bola --active \
+  --auth-header "Authorization: Bearer <low-priv-session>" \
+  --bola-field user --bola-id-arg id --bola-my-id 1 --bola-other-id 2
+```
+
+Because it requests another principal's object, `bola` is **active** (gated
+behind `--active`, off by default) and never part of `--checks all`. Use test
+accounts you control where possible. A server that enforces object-level
+authorization (returns a `FORBIDDEN` error, or only the caller's own object)
+yields no finding.
+
+### Field-level authorization — excessive data exposure (`field-authz`)
+
+The property-level sibling of `bola`: where `bola` proves a caller can read the
+wrong *object*, `field-authz` proves a caller can read the wrong *fields* of an
+object they may otherwise see. GraphQL authorization is frequently enforced only
+at the query/object level, leaving individual sensitive fields (SSN, credit
+card, password hash, internal flags) ungated — Broken Object Property Level
+Authorization / excessive data exposure (OWASP **API3:2023**, CWE-200 /
+CWE-639).
+
+`field-authz` confirms the gap with a **single benign request**: it selects the
+operator-named sensitive sub-fields on a single object and fires only when they
+return **non-null**. A server that nulls them (or errors) yields no finding, and
+the sensitive *values* are redacted in the evidence — the proof is that the
+fields were *returned*, not their contents.
+
+```bash
+enshroud --target https://api.example.com/graphql --scope-file scope.txt \
+  --checks field-authz --active \
+  --auth-header "Authorization: Bearer <low-priv-session>" \
+  --authz-field me --authz-sensitive ssn,creditCard,passwordHash
+```
+
+Like `bola`, it is **active** (gated behind `--active`) and never part of
+`--checks all`. Severity is HIGH when a genuinely PII/credential-shaped field
+leaks, MEDIUM for a plain property-level gap.
 
 ## Attribution
 

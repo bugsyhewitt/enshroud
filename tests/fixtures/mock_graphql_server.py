@@ -81,6 +81,9 @@ def create_app(
     enum_arg: str | None = None,
     enum_type_name: str | None = None,
     enum_values: list[str] | None = None,
+    bola_object: dict[str, Any] | None = None,
+    field_authz: dict[str, Any] | None = None,
+    arg_suggestions: dict[str, list[str]] | None = None,
 ) -> FastAPI:
     app = FastAPI()
     cfg = {
@@ -344,6 +347,52 @@ def create_app(
         "enum_arg": enum_arg,
         "enum_type_name": enum_type_name,
         "enum_values": list(enum_values) if enum_values else [],
+        # ── Object-level BOLA modelling (bola check) ────────────────────────
+        # Models a query field that fetches an object by an ID argument, plus
+        # an authorization model keyed (or not) on the caller's session. The
+        # `bola` check sends ONE benign request that swaps the ID argument for
+        # another object's ID using the *caller's own* (low-privilege) session;
+        # a server with object-level authorization missing returns the other
+        # object, a server that enforces it returns an authorization error.
+        # Shape:
+        #   {"query_field": str,          # e.g. "user"
+        #    "id_arg": str,               # e.g. "id"
+        #    "objects": {id: {field: value, ...}, ...},  # the readable objects
+        #    "session_header": str,       # request header carrying the session
+        #    "owner_of": {id: session_value, ...},  # which session owns each id
+        #    "enforce_authz": bool}       # True = server checks ownership
+        # When `enforce_authz` is True the server returns a FORBIDDEN error
+        # unless the caller's session owns the requested object. When False
+        # (the vulnerability) it returns any requested object regardless of
+        # session — the missing-object-authorization bug the check confirms.
+        # When None (default) the field is absent and the check stays silent.
+        "bola_object": bola_object,
+        # ── Field-level authorization modelling (field-authz check) ─────────
+        # Models a query field exposing sensitive fields (ssn, creditCard, …)
+        # that should be gated by field-level authorization. The `field-authz`
+        # check requests those sensitive fields with the caller's session; a
+        # server missing field-level authz returns their values, a server that
+        # enforces it nulls them out (or errors). Shape:
+        #   {"query_field": str,                 # e.g. "me"
+        #    "sensitive_fields": {name: value},  # field -> value when leaked
+        #    "public_fields": {name: value},     # always-returned fields
+        #    "gated": bool}                       # True = authz enforced
+        # When `gated` is True the sensitive fields come back null (the secure
+        # posture the check must read as no-finding); when False (the bug) they
+        # return their real values — the excessive-data-exposure the check
+        # confirms. When None (default) the field is absent and the check stays
+        # silent.
+        "field_authz": field_authz,
+        # ── Argument-name suggestion oracle (schema-export arg inference) ───
+        # Maps an existing field name to the real argument names it accepts, so
+        # the schema-export argument-inference pass can recover them via the
+        # graphql-js `KnownArgumentNamesRule` "Did you mean" oracle. When a
+        # probe sends an unknown argument lexically close to a real one on a
+        # mapped field, the server replies `Unknown argument "<probe>" on field
+        # "Query.<field>". Did you mean "<real>"?` (gated on
+        # `suggestions_enabled`). When None / empty (default) no field advertises
+        # argument suggestions and argument inference recovers nothing.
+        "arg_suggestions": dict(arg_suggestions) if arg_suggestions else {},
     }
     # APQ state: hash → query string
     apq_cache: dict[str, str] = {}
@@ -1366,6 +1415,124 @@ def create_app(
             response = JSONResponse(content={"errors": [{"message": msg}]})
             _add_cors(response)
             return response
+
+        # ── Argument-name suggestion oracle (schema-export arg inference) ──
+        # When a field is registered in `arg_suggestions`, a probe that supplies
+        # an *unknown* argument lexically close to one of that field's real
+        # argument names triggers graphql-js's KnownArgumentNamesRule wording,
+        # leaking the real argument name. The schema-export argument-inference
+        # pass drives this to recover ID-shaped argument names without
+        # introspection. Matched before introspection so the probe halts at
+        # validation. The probe shape is `{ <field>(<wrongArg>: ...) ... }`.
+        if cfg["arg_suggestions"]:
+            for known_field, real_args in cfg["arg_suggestions"].items():
+                arg_probe = re.search(
+                    r"\b" + re.escape(known_field)
+                    + r"\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:",
+                    query,
+                )
+                if not arg_probe:
+                    continue
+                supplied = arg_probe.group(1)
+                # Only respond to a *wrong* argument name (a real one would be
+                # accepted by the resolver, not rejected at validation).
+                if supplied in real_args:
+                    continue
+                msg = (
+                    f'Unknown argument "{supplied}" on field '
+                    f'"Query.{known_field}".'
+                )
+                if cfg["suggestions_enabled"]:
+                    suggestion = _closest_field(supplied, list(real_args))
+                    hint = suggestion or real_args[0]
+                    msg += f' Did you mean "{hint}"?'
+                response = JSONResponse(content={"errors": [{"message": msg}]})
+                _add_cors(response)
+                return response
+
+        # ── Object-level BOLA probe (bola check) ────────────────────────────
+        # The bola check sends ONE benign request fetching an object by ID with
+        # the caller's own session header. Shape:
+        #   `{ <query_field>(<id_arg>: "<other_id>") { id <fields> } }`.
+        # When `enforce_authz` is True the server only returns the object if the
+        # caller's session owns it (else a FORBIDDEN error — the secure posture);
+        # when False (the vulnerability) it returns any requested object, which
+        # is the missing object-authorization the check confirms. The session is
+        # read from the configured `session_header` (default Authorization).
+        bola = cfg["bola_object"]
+        if bola and bola.get("query_field") and bola["query_field"] in query:
+            qfield = bola["query_field"]
+            id_arg = bola.get("id_arg") or "id"
+            id_match = re.search(
+                re.escape(id_arg) + r'\s*:\s*"([^"]*)"', query
+            )
+            if id_match:
+                requested_id = id_match.group(1)
+                objects = bola.get("objects") or {}
+                if requested_id in objects:
+                    session_header = (bola.get("session_header") or "authorization").lower()
+                    caller_session = request.headers.get(session_header, "")
+                    owner_of = bola.get("owner_of") or {}
+                    owns = owner_of.get(requested_id) == caller_session
+                    if bola.get("enforce_authz") and not owns:
+                        response = JSONResponse(
+                            content={
+                                "errors": [
+                                    {
+                                        "message": (
+                                            f"Not authorized to access "
+                                            f"{qfield} {requested_id}."
+                                        ),
+                                        "extensions": {"code": "FORBIDDEN"},
+                                    }
+                                ]
+                            }
+                        )
+                        _add_cors(response)
+                        return response
+                    # Authorization missing (or caller owns it): return the
+                    # object. The check confirms BOLA only when the returned id
+                    # is one the caller does NOT own.
+                    obj = dict(objects[requested_id])
+                    obj.setdefault("id", requested_id)
+                    response = JSONResponse(content={"data": {qfield: obj}})
+                    _add_cors(response)
+                    return response
+                # Unknown id → not found (no object leaked).
+                response = JSONResponse(
+                    content={"data": {qfield: None}}
+                )
+                _add_cors(response)
+                return response
+
+        # ── Field-level authorization probe (field-authz check) ─────────────
+        # The field-authz check requests sensitive fields on a query field with
+        # the caller's session. Shape: `{ <query_field> { id <sensitive...> } }`.
+        # When `gated` is True the sensitive fields come back null (secure); when
+        # False (the bug) they return their real values — the excessive-data-
+        # exposure the check confirms. Matched on the configured query field with
+        # at least one configured sensitive field present in the selection.
+        fa = cfg["field_authz"]
+        if fa and fa.get("query_field") and fa["query_field"] in query:
+            qfield = fa["query_field"]
+            sensitive = fa.get("sensitive_fields") or {}
+            public = fa.get("public_fields") or {}
+            requested_sensitive = [
+                name for name in sensitive if re.search(r"\b" + re.escape(name) + r"\b", query)
+            ]
+            if requested_sensitive:
+                obj: dict[str, Any] = {}
+                # Always return the public fields that were selected.
+                for name, value in public.items():
+                    if re.search(r"\b" + re.escape(name) + r"\b", query):
+                        obj[name] = value
+                obj.setdefault("id", public.get("id", "self"))
+                for name in requested_sensitive:
+                    # Gated server nulls the field; vulnerable server leaks it.
+                    obj[name] = None if fa.get("gated") else sensitive[name]
+                response = JSONResponse(content={"data": {qfield: obj}})
+                _add_cors(response)
+                return response
 
         # Handle introspection queries
         # Use word-boundary checks to avoid matching __typename as __type
