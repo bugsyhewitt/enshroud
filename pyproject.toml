@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enshroud"
-version = "0.1.0"
+version = "1.0.0"
 description = "Modern GraphQL attack-surface scanner for bug bounty and penetration testing"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -42,3 +42,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "ship_gate: v1.0 release ship-gate (slow; runs build + fresh venv install + editable-install contract)",
+]
