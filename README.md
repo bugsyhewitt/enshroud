@@ -25,6 +25,10 @@ cd enshroud
 pip install -e .
 ```
 
+### Troubleshooting
+
+If `pytest -q` from the project's `.venv/` fails with `ModuleNotFoundError: No module named 'enshroud'`, your editable-install `.pth` file points to a deleted worktree. Re-run `pip install -e ".[dev]"` to repair it. The ship-gate test `tests/test_wheel_ship_gate.py::test_editable_install_pth_points_to_existing_src` pins this contract permanently.
+
 The opt-in `websocket` check requires the optional `websockets` dependency:
 
 ```bash
