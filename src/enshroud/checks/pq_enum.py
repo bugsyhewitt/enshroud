@@ -74,17 +74,6 @@ def _id_payloads(doc_id: str) -> list[dict[str, Any]]:
     ]
 
 
-async def _post_json(client: GraphQLClient, body: dict[str, Any]) -> httpx.Response:
-    """POST a raw JSON body to the endpoint, bypassing the query() helper."""
-    async with httpx.AsyncClient(timeout=client.timeout) as http:
-        resp = await http.post(
-            client.endpoint,
-            headers=client.headers,
-            content=json.dumps(body),
-        )
-    return resp
-
-
 def _is_persisted_query_not_found(body: dict[str, Any]) -> bool:
     """True when the body carries a PersistedQueryNotFound error (APQ signal)."""
     errors = body.get("errors") or []
@@ -124,7 +113,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
     for doc_id in _PROBE_IDS:
         for payload in _id_payloads(doc_id):
             try:
-                resp = await _post_json(client, payload)
+                resp = await client.post_json_raw(payload)
             except Exception:
                 # Transport error on one shape does not close the others.
                 continue

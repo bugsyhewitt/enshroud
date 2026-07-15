@@ -19,7 +19,6 @@ the ``apq`` check.
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 import httpx
@@ -63,17 +62,6 @@ def _build_lookup_probe(hash_hex: str) -> dict[str, Any]:
             }
         }
     }
-
-
-async def _post_json(client: GraphQLClient, body: dict) -> httpx.Response:
-    """POST a raw JSON body to the endpoint, bypassing the query() helper."""
-    async with httpx.AsyncClient(timeout=client.timeout) as http:
-        resp = await http.post(
-            client.endpoint,
-            headers=client.headers,
-            content=json.dumps(body),
-        )
-    return resp
 
 
 def _is_apq_enabled(resp: httpx.Response) -> bool:
@@ -150,7 +138,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
 
     # ── Step 1: confirm APQ is enabled at all ──────────────────────────────
     try:
-        probe = await _post_json(client, _build_lookup_probe(_WRONG_HASH))
+        probe = await client.post_json_raw(_build_lookup_probe(_WRONG_HASH))
     except Exception:
         return findings
 
@@ -161,8 +149,8 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
     # ── Step 2: attempt a mismatched registration ──────────────────────────
     # Send a real query body alongside a hash that is NOT sha256(query).
     try:
-        reg = await _post_json(
-            client, _build_mismatch_probe(_PROBE_QUERY, _WRONG_HASH)
+        reg = await client.post_json_raw(
+            _build_mismatch_probe(_PROBE_QUERY, _WRONG_HASH)
         )
     except Exception:
         return findings
@@ -181,7 +169,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
     # hash the attacker chose — confirmed cache poisoning.
     poison_confirmed = False
     try:
-        lookup = await _post_json(client, _build_lookup_probe(_WRONG_HASH))
+        lookup = await client.post_json_raw(_build_lookup_probe(_WRONG_HASH))
         if lookup.status_code == 200 and not _is_apq_enabled(lookup):
             lbody = lookup.json()
             poison_confirmed = bool(lbody.get("data"))
