@@ -1,5 +1,9 @@
 # enshroud
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bugsyhewitt/bugsyhewitt.github.io/main/public/cards/enshroud.jpg" alt="enshroud" width="680">
+</p>
+
 Modern GraphQL attack-surface scanner for bug bounty and penetration testing.
 
 enshroud replaces the abandoned [GraphQLmap](https://github.com/swisskyrepo/GraphQLmap) and expands coverage to the full modern GraphQL attack surface: introspection leakage, naive-filter introspection bypass, depth-based DoS, alias batching, real-field alias overloading (per-field rate-limit bypass), JSON-array operation batching, field suggestion oracles, authorization bypass via field aliasing, dangerous mutation enumeration, CORS misconfiguration, CSRF via content-type bypass, insecure session-cookie posture, in-browser GraphQL IDE exposure, GraphQL engine fingerprinting, Automatic Persisted Query (APQ) abuse, APQ cache poisoning via unverified query hashes, APQ execution over cacheable GET requests, Clairvoyance-style schema reconstruction, SQL/NoSQL injection probing, Apollo Federation schema/entity-resolver exposure, and GraphQL-over-WebSocket subscription security.
