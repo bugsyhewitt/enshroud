@@ -1,7 +1,6 @@
 """Automatic Persisted Query (APQ) abuse check."""
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
@@ -32,17 +31,6 @@ def _build_apq_probe(*, include_query: bool = False, hash_hex: str = _RANDOM_HAS
     if include_query:
         payload["query"] = _PROBE_QUERY
     return payload
-
-
-async def _post_json(client: GraphQLClient, body: dict) -> httpx.Response:
-    """POST raw JSON to the client endpoint, bypassing the query() helper."""
-    async with httpx.AsyncClient(timeout=client.timeout) as http:
-        resp = await http.post(
-            client.endpoint,
-            headers=client.headers,
-            content=json.dumps(body),
-        )
-    return resp
 
 
 def _is_apq_not_found(resp: httpx.Response) -> bool:
@@ -78,7 +66,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
 
     # ── Step 1: probe for APQ support ──────────────────────────────────────
     try:
-        probe_resp = await _post_json(client, _build_apq_probe(include_query=False))
+        probe_resp = await client.post_json_raw(_build_apq_probe(include_query=False))
     except Exception:
         return findings
 
@@ -117,9 +105,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
 
     # ── Step 2: try unauthenticated registration ────────────────────────────
     try:
-        reg_resp = await _post_json(
-            client, _build_apq_probe(include_query=True)
-        )
+        reg_resp = await client.post_json_raw(_build_apq_probe(include_query=True))
     except Exception:
         return findings
 
@@ -161,9 +147,8 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
     for i in range(_RATE_LIMIT_PROBES):
         variant_hash = format(i + 0x1000, "064x")  # distinct but valid hex hashes
         try:
-            r = await _post_json(
-                client,
-                _build_apq_probe(include_query=True, hash_hex=variant_hash),
+            r = await client.post_json_raw(
+                _build_apq_probe(include_query=True, hash_hex=variant_hash)
             )
         except Exception:
             break

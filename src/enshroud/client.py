@@ -101,6 +101,21 @@ class GraphQLClient:
             )
             return resp
 
+    async def post_json_raw(self, body: dict[str, Any]) -> httpx.Response:
+        """POST an arbitrary JSON body to the endpoint, bypassing the query() helper.
+
+        Used by checks that need to craft non-standard GraphQL payloads (e.g.
+        APQ registration and persisted-query probes) where the body is not a
+        simple ``{"query": "..."}`` wrapper.  Returns the raw httpx Response.
+        """
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                self.endpoint,
+                headers=self.headers,
+                content=json.dumps(body),
+            )
+            return resp
+
     async def post_form(
         self,
         query: str,

@@ -81,17 +81,6 @@ def _persisted_query_param(hash_hex: str) -> str:
     )
 
 
-async def _post_json(client: GraphQLClient, body: dict[str, Any]) -> httpx.Response:
-    """POST a raw JSON body to the endpoint, bypassing the query() helper."""
-    async with httpx.AsyncClient(timeout=client.timeout) as http:
-        resp = await http.post(
-            client.endpoint,
-            headers=client.headers,
-            content=json.dumps(body),
-        )
-    return resp
-
-
 async def _get_persisted(
     client: GraphQLClient, hash_hex: str
 ) -> httpx.Response:
@@ -142,9 +131,8 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
 
     # ── Step 1: confirm APQ is enabled (hash-only POST lookup) ──────────────
     try:
-        probe = await _post_json(
-            client,
-            {"extensions": {"persistedQuery": {"version": 1, "sha256Hash": _RANDOM_HASH}}},
+        probe = await client.post_json_raw(
+            {"extensions": {"persistedQuery": {"version": 1, "sha256Hash": _RANDOM_HASH}}}
         )
     except Exception:
         return findings
@@ -160,14 +148,13 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
     # the GET probe below. If the hash was never cached, the GET returns
     # PersistedQueryNotFound and the check correctly reports nothing.
     try:
-        await _post_json(
-            client,
+        await client.post_json_raw(
             {
                 "query": _PROBE_QUERY,
                 "extensions": {
                     "persistedQuery": {"version": 1, "sha256Hash": probe_hash}
                 },
-            },
+            }
         )
     except Exception:
         # A registration transport error does not by itself mean the GET path is
