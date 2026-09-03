@@ -34,13 +34,12 @@ import json
 import re
 from typing import Any, Iterable
 
-from enshroud.client import GraphQLClient
 from enshroud.checks.schema_fuzz import (
     DEFAULT_FUZZ_RATE,
     _classify,
-    _extract_suggestions,
     load_wordlist,
 )
+from enshroud.client import GraphQLClient
 
 # Bound on total probes so a misconfigured run can't hammer a target. Covers the
 # field-discovery sweep plus the bounded argument-inference probes per field.

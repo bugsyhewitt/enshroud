@@ -29,7 +29,7 @@ async def check(client: GraphQLClient) -> list[dict[str, Any]]:
 
     try:
         resp = await client.query(INTROSPECTION_QUERY)
-    except Exception as exc:
+    except Exception:
         # Connection error or non-2xx — not considered a finding
         return findings
 

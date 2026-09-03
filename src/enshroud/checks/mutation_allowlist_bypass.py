@@ -101,7 +101,10 @@ _MAX_PROBES = 25
 # / variable — the field was found and its argument signature was checked.
 _BYPASS_ARG_ERROR_PATTERNS = (
     re.compile(r'argument\s+"[^"]+"\s+of\s+type\s+"[^"]+!"\s+is\s+required', re.IGNORECASE),
-    re.compile(r'field\s+"[^"]+"\s+argument\s+"[^"]+"\s+of\s+type\s+"[^"]+!"\s+is\s+required', re.IGNORECASE),
+    re.compile(
+        r'field\s+"[^"]+"\s+argument\s+"[^"]+"\s+of\s+type\s+"[^"]+!"\s+is\s+required',
+        re.IGNORECASE,
+    ),
     re.compile(r'required\s+argument\s+"[^"]+"', re.IGNORECASE),
     re.compile(r'missing\s+required\s+argument', re.IGNORECASE),
     re.compile(r'must\s+have\s+a\s+value\s+for\s+(its\s+)?required\s+argument', re.IGNORECASE),
