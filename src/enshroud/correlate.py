@@ -96,10 +96,14 @@ def _matching_behaviors(engine: dict[str, Any], category: str) -> list[str]:
     ]
 
 
-def _annotate(finding: dict[str, Any], engine: dict[str, Any], behaviors: list[str]) -> dict[str, Any]:
+def _annotate(
+    finding: dict[str, Any], engine: dict[str, Any], behaviors: list[str]
+) -> dict[str, Any]:
     """Return a copy of ``finding`` annotated with engine correlation context."""
     annotated = copy.deepcopy(finding)
-    display = engine.get("engine_display_name") or engine.get("engine_name") or "the identified engine"
+    display = (
+        engine.get("engine_display_name") or engine.get("engine_name") or "the identified engine"
+    )
     annotated["engine_context"] = {
         "engine_name": engine.get("engine_name"),
         "engine_display_name": display,

@@ -225,7 +225,9 @@ async def _send(client: GraphQLClient, query: str) -> tuple[str, float]:
         return "", time.monotonic() - start
 
 
-def _error_finding(target: dict[str, str], payload: str, dbms: str, evidence: str) -> dict[str, Any]:
+def _error_finding(
+    target: dict[str, str], payload: str, dbms: str, evidence: str
+) -> dict[str, Any]:
     category = (
         "nosql_injection_signal" if dbms == "MongoDB" else "sql_injection_signal"
     )

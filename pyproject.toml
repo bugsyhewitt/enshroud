@@ -45,3 +45,8 @@ testpaths = ["tests"]
 markers = [
     "ship_gate: v1.0 release ship-gate (slow; runs build + fresh venv install + editable-install contract)",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+select = ["E", "F", "W", "I"]
