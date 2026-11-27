@@ -269,3 +269,133 @@ def test_time_finding_records_control_in_evidence():
     assert "control(pg_sleep(0))=0.20s" in f["evidence"]
     assert "delta vs control 3.10s" in f["evidence"]
     assert "delta vs baseline 3.20s" in f["evidence"]
+
+
+# ── Additional unit tests: _render_value ─────────────────────────────────────
+
+def test_render_value_string_wraps_in_quotes():
+    """String scalars are rendered as double-quoted GraphQL string literals."""
+    result = injection._render_value("hello", "String")
+    assert result == '"hello"'
+
+
+def test_render_value_string_escapes_embedded_quotes():
+    """Embedded double-quotes in a String payload must be escaped."""
+    result = injection._render_value('say "hi"', "String")
+    assert result == '"say \\"hi\\""'
+
+
+def test_render_value_id_wraps_in_quotes():
+    """ID scalars are treated like String and get a quoted literal."""
+    result = injection._render_value("42", "ID")
+    assert result == '"42"'
+
+
+def test_render_value_int_unquoted():
+    """Int scalars are sent as unquoted tokens — the parser choke is the signal."""
+    result = injection._render_value("1 OR 1=1", "Int")
+    assert result == "1 OR 1=1"
+    assert '"' not in result
+
+
+# ── Additional unit tests: detect_dbms_error ─────────────────────────────────
+
+def test_detect_dbms_error_postgresql_pattern():
+    assert injection.detect_dbms_error("syntax error at or near \"'\"") == "PostgreSQL"
+    assert injection.detect_dbms_error("pg_query() error") == "PostgreSQL"
+
+
+def test_detect_dbms_error_mssql_pattern():
+    assert injection.detect_dbms_error("Unclosed quotation mark after the character string") == "MSSQL"
+    assert injection.detect_dbms_error("Incorrect syntax near 'x'") == "MSSQL"
+
+
+def test_detect_dbms_error_sqlite_pattern():
+    assert injection.detect_dbms_error("unrecognized token: \"'\"") == "SQLite"
+    assert injection.detect_dbms_error("no such column: foo") == "SQLite"
+
+
+def test_detect_dbms_error_oracle_pattern():
+    assert injection.detect_dbms_error("ORA-01756: quoted string not properly terminated") == "Oracle"
+    assert injection.detect_dbms_error("Oracle error occurred") == "Oracle"
+
+
+def test_detect_dbms_error_case_insensitive():
+    """Pattern matching must be case-insensitive (server errors vary in casing)."""
+    assert injection.detect_dbms_error("YOU HAVE AN ERROR IN YOUR SQL SYNTAX") == "MySQL"
+    assert injection.detect_dbms_error("MONGOERROR: unknown operator") == "MongoDB"
+
+
+# ── Additional unit tests: _error_finding category routing ───────────────────
+
+def test_error_finding_mongodb_uses_nosql_category():
+    target = {"operation": "query", "field": "search", "arg": "q", "scalar": "String"}
+    f = injection._error_finding(target, '{"$gt": ""}', "MongoDB", "MongoError raw")
+    assert f["category"] == "nosql_injection_signal"
+    assert f["severity"] == "CRITICAL"
+    assert f["dbms"] == "MongoDB"
+
+
+def test_error_finding_mysql_uses_sql_category():
+    target = {"operation": "query", "field": "users", "arg": "id", "scalar": "String"}
+    f = injection._error_finding(target, "'", "MySQL", "SQL syntax error raw")
+    assert f["category"] == "sql_injection_signal"
+    assert f["severity"] == "CRITICAL"
+    assert f["dbms"] == "MySQL"
+
+
+def test_error_finding_evidence_capped_at_500():
+    """_error_finding must truncate the raw response text to 500 chars."""
+    target = {"operation": "query", "field": "x", "arg": "y", "scalar": "String"}
+    long_text = "X" * 1000
+    f = injection._error_finding(target, "'", "MySQL", long_text)
+    assert len(f["evidence"]) <= 500
+
+
+# ── Additional unit tests: enumerate_fuzzable_args edge cases ────────────────
+
+def test_enumerate_fuzzable_args_empty_schema():
+    """An empty schema dict must return an empty target list without crashing."""
+    assert injection.enumerate_fuzzable_args({}) == []
+
+
+def test_enumerate_fuzzable_args_no_mutation_type():
+    """A query-only schema must still enumerate query fields."""
+    schema = {
+        "queryType": {
+            "fields": [
+                {
+                    "name": "ping",
+                    "args": [
+                        {"name": "msg", "type": {"kind": "SCALAR", "name": "String"}},
+                    ],
+                }
+            ]
+        }
+    }
+    targets = injection.enumerate_fuzzable_args(schema)
+    assert len(targets) == 1
+    assert targets[0]["field"] == "ping"
+    assert targets[0]["arg"] == "msg"
+    assert targets[0]["operation"] == "query"
+
+
+def test_enumerate_fuzzable_args_skips_no_args_fields():
+    """Fields with no arguments must not appear in the target list."""
+    schema = {
+        "queryType": {
+            "fields": [
+                {"name": "health", "args": []},
+                {"name": "version", "args": None},
+            ]
+        }
+    }
+    assert injection.enumerate_fuzzable_args(schema) == []
+
+
+# ── CLI registration ──────────────────────────────────────────────────────────
+
+def test_injection_registered_in_valid_checks():
+    from enshroud.cli import VALID_CHECKS
+
+    assert "injection" in VALID_CHECKS

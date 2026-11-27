@@ -175,3 +175,163 @@ def test_federation_in_all_checks():
     assert "federation" in VALID_CHECKS
     assert "federation" in parse_checks("all")
     assert parse_checks("federation") == ["federation"]
+
+
+# ── Additional unit tests: _looks_like_sdl keyword coverage ──────────────────
+
+def test_looks_like_sdl_with_interface_keyword():
+    assert federation._looks_like_sdl("interface Node { id: ID! }") is True
+
+
+def test_looks_like_sdl_with_enum_keyword():
+    assert federation._looks_like_sdl("enum Status { ACTIVE INACTIVE }") is True
+
+
+def test_looks_like_sdl_with_input_keyword():
+    assert federation._looks_like_sdl("input CreateUserInput { name: String! }") is True
+
+
+def test_looks_like_sdl_with_scalar_keyword():
+    assert federation._looks_like_sdl("scalar DateTime") is True
+
+
+def test_looks_like_sdl_rejects_short_string():
+    """A string shorter than 8 chars is not a valid SDL document."""
+    assert federation._looks_like_sdl("type") is False
+    assert federation._looks_like_sdl("x") is False
+
+
+# ── Additional unit tests: _field_is_unknown error wording variants ───────────
+
+def test_field_is_unknown_with_unknown_field_wording():
+    resp = {"errors": [{"message": 'Unknown field "_entities" on type "Query".'}]}
+    assert federation._field_is_unknown(resp, "_entities") is True
+
+
+def test_field_is_unknown_with_does_not_exist_wording():
+    resp = {"errors": [{"message": 'Field "_service" does not exist on type "Query".'}]}
+    assert federation._field_is_unknown(resp, "_service") is True
+
+
+def test_field_is_unknown_requires_field_name_in_message():
+    """An unrelated error must not be treated as 'field unknown'."""
+    resp = {"errors": [{"message": "Cannot query field \"_other\" on type \"Query\"."}]}
+    assert federation._field_is_unknown(resp, "_service") is False
+
+
+def test_field_is_unknown_false_on_data_response():
+    """A clean data response (field recognised) is not an unknown-field error."""
+    assert federation._field_is_unknown({"data": {"_service": {"sdl": "..."}}}, "_service") is False
+
+
+# ── Mock-client unit tests: check() edge cases ───────────────────────────────
+
+class _MockFedClient:
+    """Stand-in for GraphQLClient returning preset responses per query."""
+
+    def __init__(self, sdl_resp=None, entities_resp=None, raise_exc: Exception | None = None):
+        self._sdl_resp = sdl_resp
+        self._entities_resp = entities_resp
+        self._raise_exc = raise_exc
+
+    async def query(self, q: str):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        if "_service" in q:
+            return self._sdl_resp
+        return self._entities_resp
+
+
+@pytest.mark.asyncio
+async def test_connection_error_no_findings():
+    """A network exception from both probes must return an empty list."""
+    client = _MockFedClient(raise_exc=Exception("timeout"))
+    findings = await federation.check(client)
+    assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_sdl_finding_severity_is_high():
+    sdl_resp = {"data": {"_service": {"sdl": _SAMPLE_SDL}}}
+    entities_resp = {"errors": [{"message": 'Cannot query field "_entities" on type "Query".'}]}
+    client = _MockFedClient(sdl_resp=sdl_resp, entities_resp=entities_resp)
+    findings = await federation.check(client)
+    sdl_f = next((f for f in findings if f["category"] == "federation_sdl_exposed"), None)
+    assert sdl_f is not None
+    assert sdl_f["severity"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_entities_finding_severity_is_medium():
+    sdl_resp = {"errors": [{"message": 'Cannot query field "_service" on type "Query".'}]}
+    entities_resp = {"data": {"_entities": []}}
+    client = _MockFedClient(sdl_resp=sdl_resp, entities_resp=entities_resp)
+    findings = await federation.check(client)
+    ent_f = next((f for f in findings if f["category"] == "federation_entities_exposed"), None)
+    assert ent_f is not None
+    assert ent_f["severity"] == "MEDIUM"
+
+
+# ── Finding structure tests (require a live server) ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_sdl_finding_has_all_required_keys():
+    app = create_app(federation_sdl=_SAMPLE_SDL, federation_entities=False)
+    host, port, server = _start_server(app)
+    try:
+        client = GraphQLClient(f"http://{host}:{port}/graphql")
+        findings = await federation.check(client)
+        sdl_f = next((f for f in findings if f["category"] == "federation_sdl_exposed"), None)
+        assert sdl_f is not None
+        for key in ("category", "severity", "title", "evidence", "description", "impact", "remediation", "reproduction"):
+            assert key in sdl_f, f"missing key: {key}"
+    finally:
+        server.should_exit = True
+
+
+@pytest.mark.asyncio
+async def test_sdl_finding_evidence_is_valid_json():
+    app = create_app(federation_sdl=_SAMPLE_SDL, federation_entities=False)
+    host, port, server = _start_server(app)
+    try:
+        client = GraphQLClient(f"http://{host}:{port}/graphql")
+        findings = await federation.check(client)
+        sdl_f = next((f for f in findings if f["category"] == "federation_sdl_exposed"), None)
+        assert sdl_f is not None
+        evidence = json.loads(sdl_f["evidence"])
+        assert "sdl_length" in evidence
+        assert "sdl_prefix" in evidence
+        assert evidence["sdl_length"] == len(_SAMPLE_SDL)
+    finally:
+        server.should_exit = True
+
+
+@pytest.mark.asyncio
+async def test_entities_finding_has_all_required_keys():
+    app = create_app(federation_sdl=None, federation_entities=True)
+    host, port, server = _start_server(app)
+    try:
+        client = GraphQLClient(f"http://{host}:{port}/graphql")
+        findings = await federation.check(client)
+        ent_f = next((f for f in findings if f["category"] == "federation_entities_exposed"), None)
+        assert ent_f is not None
+        for key in ("category", "severity", "title", "evidence", "description", "impact", "remediation", "reproduction"):
+            assert key in ent_f, f"missing key: {key}"
+    finally:
+        server.should_exit = True
+
+
+@pytest.mark.asyncio
+async def test_entities_finding_evidence_contains_probe():
+    app = create_app(federation_sdl=None, federation_entities=True)
+    host, port, server = _start_server(app)
+    try:
+        client = GraphQLClient(f"http://{host}:{port}/graphql")
+        findings = await federation.check(client)
+        ent_f = next((f for f in findings if f["category"] == "federation_entities_exposed"), None)
+        assert ent_f is not None
+        evidence = json.loads(ent_f["evidence"])
+        assert "probe" in evidence
+        assert "_entities" in evidence["probe"]
+    finally:
+        server.should_exit = True
